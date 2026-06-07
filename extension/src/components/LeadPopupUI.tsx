@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   Search, Database, Settings, Download, UserPlus, 
   Trash2, Copy, Moon, Sun, ArrowRight, CheckCircle2, 
-  AlertCircle, ChevronRight, FileSpreadsheet, Loader2, Sparkles
+  AlertCircle, ChevronRight, FileSpreadsheet, Loader2, Sparkles,
+  Eye, EyeOff
 } from 'lucide-react';
 
 interface LeadData {
@@ -36,6 +37,7 @@ export default function LeadPopupUI() {
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [nameInput, setNameInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   
   // Extraction states
   const [extractedData, setExtractedData] = useState<LeadData | null>(null);
@@ -416,13 +418,22 @@ export default function LeadPopupUI() {
               </div>
               <div>
                 <label className="text-[10px] text-slate-400">Password</label>
-                <input 
-                  type="password" 
-                  placeholder="••••••••"
-                  value={passwordInput}
-                  onChange={(e) => setPasswordInput(e.target.value)}
-                  className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                />
+                <div className="relative">
+                  <input 
+                    type={showPassword ? "text" : "password"} 
+                    placeholder="••••••••"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    className={`w-full p-2 mt-1 pr-8 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-2 top-3 text-slate-400 hover:text-slate-200"
+                  >
+                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
               </div>
 
               <button 
@@ -562,69 +573,39 @@ export default function LeadPopupUI() {
             )}
 
             {activeTab === 'dashboard' && (
-              <div className="space-y-4">
-                {/* Search Bar */}
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
-                    <input 
-                      type="text" 
-                      placeholder="Search workspace leads..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && fetchLeads()}
-                      className={`w-full pl-9 pr-4 py-2 rounded-xl text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                    />
-                  </div>
+              <div className="h-full flex flex-col justify-center py-6 text-center space-y-6">
+                <div className="w-16 h-16 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mx-auto text-blue-500">
+                  <Database className="w-8 h-8" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold">Workspace Leads</h3>
+                  <p className="text-[11px] text-slate-400 mt-1 max-w-[280px] mx-auto">
+                    To maintain clean workspaces, data records are not displayed inside the extension popup dashboard. Download export files to view your listings.
+                  </p>
                 </div>
 
-                {/* Leads list */}
-                <div className="space-y-2 max-h-[280px] overflow-y-auto">
-                  {isLoadingLeads ? (
-                    <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-amber-500" /></div>
-                  ) : leadsList.length === 0 ? (
-                    <div className="text-center py-12 text-slate-500 text-xs">No leads stored in this workspace yet.</div>
-                  ) : (
-                    leadsList.map((lead, idx) => (
-                      <div key={idx} className={`p-2.5 rounded-lg border text-xs flex justify-between items-start ${theme === 'dark' ? 'bg-slate-900/30 border-slate-850' : 'bg-white border-slate-150'}`}>
-                        <div>
-                          <div className="font-bold">{lead.name || lead.businessName || 'Unnamed Record'}</div>
-                          <div className="text-[10px] text-slate-400 mt-0.5">{lead.email || 'No email found'}</div>
-                          <div className="text-[9px] text-slate-500 mt-1">{lead.sourceDomain}</div>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[8px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded">
-                            {lead.phone ? '✓ Phone' : 'No Phone'}
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                {/* Export Buttons */}
-                <div className="pt-2 border-t border-slate-800">
-                  <div className="text-[10px] font-bold text-slate-400 mb-2">Export Data</div>
+                <div className="pt-4 border-t border-slate-800 w-full">
+                  <div className="text-[10px] font-bold text-slate-400 mb-3 uppercase tracking-wider">Download Files</div>
                   <div className="grid grid-cols-3 gap-2">
                     <button 
                       onClick={() => downloadExport('csv')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-1.5 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
+                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
                     >
-                      <Download className="w-3 h-3" />
+                      <Download className="w-3.5 h-3.5" />
                       CSV
                     </button>
                     <button 
                       onClick={() => downloadExport('xlsx')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-1.5 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
+                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
                     >
-                      <FileSpreadsheet className="w-3 h-3" />
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
                       Excel
                     </button>
                     <button 
                       onClick={() => downloadExport('pdf')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-1.5 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
+                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
                     >
-                      <Download className="w-3 h-3" />
+                      <Download className="w-3.5 h-3.5" />
                       PDF
                     </button>
                   </div>

@@ -112,37 +112,78 @@ function scrapePageData(): ExtractedLead {
     }
   });
 
-  // D. RegEx scanning of DOM text content
+  // D. Google Search Result lists specific overrides for business name
+  if (sourceDomain.includes('google.com')) {
+    // Try to find the title of the first local result card
+    const firstTitleEl = document.querySelector('[data-attrid="title"], .OSrXXb, div[role="heading"] span, a.C7rsq');
+    businessName = firstTitleEl && firstTitleEl.textContent ? firstTitleEl.textContent.trim() : 'N/A';
+    name = 'N/A';
+  }
+
+  // E. Extracted Website strategy (Find listed website rather than google.com)
+  let website = 'N/A';
+  for (const link of links) {
+    const text = (link.textContent || '').trim().toLowerCase();
+    const aria = (link.getAttribute('aria-label') || '').toLowerCase();
+    const href = link.getAttribute('href') || '';
+    
+    if (href && (text === 'website' || aria.includes('website') || aria.includes('visit website'))) {
+      if (href.includes('google.com/url?')) {
+        const urlParam = new URL(href, window.location.href).searchParams.get('url');
+        if (urlParam) {
+          website = urlParam;
+          break;
+        }
+      } else if (!href.startsWith('/') && !href.includes('google.com') && !href.includes('google.co.in')) {
+        website = href;
+        break;
+      }
+    }
+  }
+
+  // Fallback to origin if not on search page
+  if (website === 'N/A' && !sourceDomain.includes('google.com')) {
+    website = window.location.origin;
+  }
+
+  // F. RegEx scanning of DOM text content
   const textContent = document.body.innerText;
   
   // Find Emails
   const matchedEmails = textContent.match(EMAIL_REGEX);
   if (matchedEmails && matchedEmails.length > 0) {
-    // Pick the first non-generic email if possible (or default first)
     email = matchedEmails[0];
   }
 
   // Find Phones
   const matchedPhones = textContent.match(PHONE_REGEX);
   if (matchedPhones && matchedPhones.length > 0) {
-    // Filter out simple numbers and keep actual phone lengths
     const cleanPhones = matchedPhones.filter(p => p.replace(/\D/g, '').length >= 8);
     if (cleanPhones.length > 0) {
       phone = cleanPhones[0].trim();
     }
   }
 
+  // Helper to standardise empty/meta fields to N/A
+  const clean = (val: string) => {
+    const cleanVal = (val || '').trim();
+    if (!cleanVal || cleanVal.toLowerCase() === 'undefined' || cleanVal.toLowerCase() === 'search results' || cleanVal.includes('Google Search')) {
+      return 'N/A';
+    }
+    return cleanVal;
+  };
+
   return {
-    name: name.trim(),
-    businessName: businessName.trim(),
-    email: email.trim(),
-    phone: phone.trim(),
-    website: window.location.origin,
-    address: address.trim() || extractAddressFromText(textContent),
-    linkedinUrl,
-    facebookUrl,
-    instagramUrl,
-    twitterUrl,
+    name: clean(name),
+    businessName: clean(businessName),
+    email: clean(email),
+    phone: clean(phone),
+    website: clean(website),
+    address: clean(address || extractAddressFromText(textContent)),
+    linkedinUrl: clean(linkedinUrl),
+    facebookUrl: clean(facebookUrl),
+    instagramUrl: clean(instagramUrl),
+    twitterUrl: clean(twitterUrl),
     sourceUrl,
     sourceDomain,
     sourceType
