@@ -598,24 +598,26 @@ export default function LeadPopupUI() {
               <h2 className="text-sm font-bold">Find B2B Contacts Instantly</h2>
             </div>
 
-            {/* Display Email tab forms if in developer configuration */}
+            {/* Display Sign In / Sign Up Tabs */}
+            <div className="flex border-b border-slate-800 mb-4 text-xs font-semibold">
+              <button 
+                type="button"
+                onClick={() => setAuthMode('signin')}
+                className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signin' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                Sign In
+              </button>
+              <button 
+                type="button"
+                onClick={() => setAuthMode('signup')}
+                className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signup' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                Sign Up
+              </button>
+            </div>
+
             {IS_DEV_MODE ? (
               <>
-                <div className="flex border-b border-slate-800 mb-4 text-xs font-semibold">
-                  <button 
-                    onClick={() => setAuthMode('signin')}
-                    className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signin' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
-                  >
-                    Sign In
-                  </button>
-                  <button 
-                    onClick={() => setAuthMode('signup')}
-                    className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signup' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
-                  >
-                    Sign Up (New User)
-                  </button>
-                </div>
-
                 <form onSubmit={handleEmailAuth} className="space-y-3">
                   {authMode === 'signup' && (
                     <div>
@@ -675,7 +677,10 @@ export default function LeadPopupUI() {
               </>
             ) : (
               <div className="text-center text-xs text-slate-400 mb-6">
-                Sign in with your Google Workspace account to begin extracting leads.
+                {authMode === 'signin' 
+                  ? 'Sign in with your Google Workspace account to begin extracting leads.'
+                  : 'Register and get 50 free daily credits by signing up with your Google account.'
+                }
               </div>
             )}
 
@@ -684,7 +689,7 @@ export default function LeadPopupUI() {
               className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all hover-lift shadow-md"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-              <span>Sign In with Google</span>
+              <span>{authMode === 'signin' ? 'Sign In with Google' : 'Sign Up with Google'}</span>
             </button>
           </div>
         ) : (
