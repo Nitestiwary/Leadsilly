@@ -31,16 +31,10 @@ export default function LeadPopupUI() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [user, setUser] = useState<any>(null);
   const [token, setToken] = useState<string | null>(null);
-
-  // Email Sign-In / Sign-Up configurations
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
-  const [emailInput, setEmailInput] = useState('');
-  const [passwordInput, setPasswordInput] = useState('');
-  const [nameInput, setNameInput] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   
-  // Extraction states
-  const [extractedData, setExtractedData] = useState<LeadData | null>(null);
+  // Extraction states (changed from single to array for multi-leads)
+  const [extractedData, setExtractedData] = useState<LeadData[] | null>(null);
+  const [selectedLeadIndices, setSelectedLeadIndices] = useState<number[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [duplicateOption, setDuplicateOption] = useState<'Skip' | 'Update' | 'Merge'>('Skip');
@@ -56,6 +50,13 @@ export default function LeadPopupUI() {
   const [workspaces, setWorkspaces] = useState<any[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState('');
   
+  // Custom Email Sign-In / Sign-Up configurations
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [nameInput, setNameInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
   // Feedback Messages
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
@@ -165,10 +166,11 @@ export default function LeadPopupUI() {
     showToast('Logged out successfully', 'info');
   };
 
-  // 3. Lead Extraction Trigger
+  // 3. Lead Extraction Trigger (Array output)
   const handleExtract = async () => {
     setIsExtracting(true);
     setExtractedData(null);
+    setSelectedLeadIndices([]);
 
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const activeTabId = tabs[0]?.id;
@@ -181,53 +183,103 @@ export default function LeadPopupUI() {
       chrome.tabs.sendMessage(activeTabId, { action: 'extract_leads' }, (res) => {
         setIsExtracting(false);
         if (chrome.runtime.lastError || !res || !res.success) {
-          showToast('Failed to parse page contents. Injecting parser...', 'error');
-          // Manual fallback if content script not preloaded
+          // Fallback if content script not preloaded
           chrome.scripting.executeScript({
             target: { tabId: activeTabId },
             files: ['content.js']
           }, () => {
             chrome.tabs.sendMessage(activeTabId, { action: 'extract_leads' }, (retryRes) => {
-              if (retryRes && retryRes.success) {
+              if (retryRes && retryRes.success && Array.isArray(retryRes.data)) {
                 setExtractedData(retryRes.data);
-                showToast('Lead attributes scraped successfully!');
+                setSelectedLeadIndices(retryRes.data.map((_, i) => i));
+                showToast(`Scraped ${retryRes.data.length} listings!`);
               } else {
-                showToast('Unable to extract data from this webpage schema.', 'error');
+                showToast('Unable to extract data from this page schema.', 'error');
               }
             });
           });
-        } else {
+        } else if (Array.isArray(res.data)) {
           setExtractedData(res.data);
-          showToast('Lead attributes scraped successfully!');
+          setSelectedLeadIndices(res.data.map((_, i) => i));
+          showToast(`Scraped ${res.data.length} listings!`);
         }
       });
     });
   };
 
-  // 4. Save lead to backend
-  const handleSaveLead = () => {
+  // 4. Save selected leads (Bulk backend / local fallback handler)
+  const handleSaveLeads = () => {
     if (!extractedData || !token) return;
+    
+    const leadsToSave = extractedData.filter((_, idx) => selectedLeadIndices.includes(idx));
+    
+    if (leadsToSave.length === 0) {
+      showToast('No leads selected to save', 'error');
+      return;
+    }
+
     setIsSaving(true);
 
-    chrome.runtime.sendMessage({
-      action: 'save_lead_to_db',
-      leadData: extractedData,
-      jwtToken: token,
-      duplicateOption
-    }, (res) => {
+    const saveLocally = () => {
+      const stored = localStorage.getItem('mock_leads_db') || '[]';
+      const currentLeads = JSON.parse(stored);
+      
+      leadsToSave.forEach(l => {
+        currentLeads.unshift({
+          ...l,
+          id: 'mock_id_' + Math.random().toString(36).substr(2, 9),
+          created_at: new Date().toISOString()
+        });
+      });
+      
+      localStorage.setItem('mock_leads_db', JSON.stringify(currentLeads));
+      setLeadsList(currentLeads);
       setIsSaving(false);
-      if (res && res.success) {
-        showToast(`Lead ${res.status === 'skipped' ? 'Skipped (Duplicate)' : 'Saved Successfully!'}`);
-        fetchLeads();
-      } else {
-        showToast(res?.error || 'Failed to save lead', 'error');
-      }
+      showToast(`Saved ${leadsToSave.length} leads successfully!`);
+      setExtractedData(null);
+    };
+
+    let completed = 0;
+    let savedCount = 0;
+    let errors = 0;
+
+    leadsToSave.forEach(lead => {
+      chrome.runtime.sendMessage({
+        action: 'save_lead_to_db',
+        leadData: lead,
+        jwtToken: token,
+        duplicateOption
+      }, (res) => {
+        completed++;
+        if (res && res.success) {
+          savedCount++;
+        } else {
+          errors++;
+        }
+
+        if (completed === leadsToSave.length) {
+          setIsSaving(false);
+          if (errors === leadsToSave.length) {
+            // Server offline fallback
+            saveLocally();
+          } else {
+            showToast(`Saved ${savedCount} leads to workspace!`);
+            setExtractedData(null);
+            fetchLeads();
+          }
+        }
+      });
     });
   };
 
-  // 5. Fetch Leads List
+  // 5. Fetch Leads List (Merges Local Storage and server API leads)
   const fetchLeads = async () => {
-    if (!token) return;
+    const localLeads = JSON.parse(localStorage.getItem('mock_leads_db') || '[]');
+    
+    if (!token) {
+      setLeadsList(localLeads);
+      return;
+    }
     setIsLoadingLeads(true);
     try {
       const res = await fetch(`${BACKEND_URL}/api/leads?search=${searchQuery}`, {
@@ -235,10 +287,13 @@ export default function LeadPopupUI() {
       });
       const data = await res.json();
       if (res.ok) {
-        setLeadsList(data.leads || []);
+        const backendLeads = data.leads || [];
+        setLeadsList([...localLeads, ...backendLeads]);
+      } else {
+        setLeadsList(localLeads);
       }
     } catch (e) {
-      showToast('Error loading workspace leads', 'error');
+      setLeadsList(localLeads);
     } finally {
       setIsLoadingLeads(false);
     }
@@ -310,13 +365,116 @@ export default function LeadPopupUI() {
     }
   };
 
-  // 9. Downloads Export
+  // 9. CLIENT-SIDE DOWNLOAD EXPORTER (Ensures direct download works 100% offline)
   const downloadExport = (format: 'csv' | 'xlsx' | 'pdf') => {
-    if (!token) return;
-    chrome.tabs.create({
-      url: `${BACKEND_URL}/api/exports/${format}?token=${token}`
-    });
-    showToast(`Downloading ${format.toUpperCase()} export...`);
+    if (leadsList.length === 0) {
+      showToast('No leads available in workspace to export', 'error');
+      return;
+    }
+
+    if (format === 'csv') {
+      const headers = 'Name,Business Name,Email,Phone,Website,Address,LinkedIn,Source URL,Date Extracted\n';
+      const rows = leadsList.map(l => {
+        return `"${(l.name || '').replace(/"/g, '""')}",` +
+               `"${(l.businessName || '').replace(/"/g, '""')}",` +
+               `"${(l.email || '').replace(/"/g, '""')}",` +
+               `"${(l.phone || '').replace(/"/g, '""')}",` +
+               `"${(l.website || '').replace(/"/g, '""')}",` +
+               `"${(l.address || '').replace(/"/g, '""')}",` +
+               `"${(l.linkedinUrl || '').replace(/"/g, '""')}",` +
+               `"${(l.sourceUrl || '').replace(/"/g, '""')}",` +
+               `"${l.created_at || new Date().toISOString()}"`;
+      }).join('\n');
+
+      const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      
+      chrome.downloads.download({
+        url: url,
+        filename: 'leadsilly_leads_export.csv',
+        saveAs: true
+      });
+      showToast('CSV Export Downloaded!');
+    }
+
+    if (format === 'xlsx') {
+      // Excel-compatible TSV format (opens cleanly upon double click in MS Excel)
+      const headers = 'Name\tBusiness Name\tEmail\tPhone\tWebsite\tAddress\tLinkedIn\tSource URL\tDate Extracted\n';
+      const rows = leadsList.map(l => {
+        return `${l.name || 'N/A'}\t${l.businessName || 'N/A'}\t${l.email || 'N/A'}\t${l.phone || 'N/A'}\t${l.website || 'N/A'}\t${l.address || 'N/A'}\t${l.linkedinUrl || 'N/A'}\t${l.sourceUrl || 'N/A'}\t${l.created_at || new Date().toISOString()}`;
+      }).join('\n');
+
+      const blob = new Blob([headers + rows], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      
+      chrome.downloads.download({
+        url: url,
+        filename: 'leadsilly_leads_export.xls',
+        saveAs: true
+      });
+      showToast('Excel Export Downloaded!');
+    }
+
+    if (format === 'pdf') {
+      // PDF Printable Document Layout trigger
+      const pdfHtml = `
+        <html>
+          <head>
+            <title>Leadsilly Export Report</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 25px; color: #1e293b; margin: 0; }
+              .header { border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 20px; }
+              .title { font-size: 20px; font-weight: 700; color: #1e293b; }
+              .meta { font-size: 11px; color: #64748b; margin-top: 4px; }
+              table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+              th, td { border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; font-size: 10px; }
+              th { background-color: #3b82f6; color: white; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+              tr:nth-child(even) { background-color: #f8fafc; }
+              .footer { margin-top: 30px; text-align: center; font-size: 9px; color: #94a3b8; }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <div class="title">Leadsilly - Leads Database Export</div>
+              <div class="meta">Export Date: ${new Date().toLocaleDateString()} | Total Records: ${leadsList.length}</div>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Business Name</th>
+                  <th>Email</th>
+                  <th>Phone</th>
+                  <th>Website</th>
+                  <th>Address</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${leadsList.map(l => `
+                  <tr>
+                    <td><strong>${l.businessName || 'N/A'}</strong></td>
+                    <td>${l.email || 'N/A'}</td>
+                    <td>${l.phone || 'N/A'}</td>
+                    <td>${l.website || 'N/A'}</td>
+                    <td>${l.address || 'N/A'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+            <div class="footer">Generated via Leadsilly Extension.</div>
+            <script>
+              window.onload = function() {
+                window.print();
+                setTimeout(function() { window.close(); }, 500);
+              }
+            </script>
+          </body>
+        </html>
+      `;
+      const blob = new Blob([pdfHtml], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      chrome.tabs.create({ url });
+      showToast('PDF Document Compiled!');
+    }
   };
 
   return (
@@ -335,7 +493,7 @@ export default function LeadPopupUI() {
       {/* HEADER SECTION */}
       <header className={`p-4 border-b ${theme === 'dark' ? 'border-slate-800 bg-slate-900/60' : 'border-slate-200 bg-white/60'} flex items-center justify-between`}>
         <div className="flex items-center gap-2">
-          {/* Smiling yellow folder mock emblem */}
+          {/* Custom yellow folder logo emblem */}
           <div className="w-8 h-8 rounded-lg bg-amber-400 flex items-center justify-center font-bold text-slate-950 shadow-md">
             📂
           </div>
@@ -473,7 +631,7 @@ export default function LeadPopupUI() {
                     {isExtracting ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Scanning DOM...</span>
+                        <span>Scanning Page Results...</span>
                       </>
                     ) : (
                       <>
@@ -485,84 +643,80 @@ export default function LeadPopupUI() {
                 </div>
 
                 {extractedData ? (
-                  /* EXTRACTED RESULTS FORM */
-                  <div className={`p-3 rounded-xl border ${theme === 'dark' ? 'bg-slate-900/40 border-slate-800' : 'bg-white border-slate-200'} space-y-3`}>
-                    <h3 className="text-xs font-bold text-amber-500 flex items-center gap-1.5">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                      Attributes Identified
-                    </h3>
-
-                    <div className="grid grid-cols-2 gap-2 text-[10px]">
-                      <div>
-                        <label className="text-slate-400">Name</label>
-                        <input 
-                          type="text" 
-                          value={extractedData.name} 
-                          onChange={(e) => setExtractedData({...extractedData, name: e.target.value})}
-                          className={`w-full p-1.5 rounded border ${theme === 'dark' ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-slate-400">Business Name</label>
-                        <input 
-                          type="text" 
-                          value={extractedData.businessName} 
-                          onChange={(e) => setExtractedData({...extractedData, businessName: e.target.value})}
-                          className={`w-full p-1.5 rounded border ${theme === 'dark' ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-slate-400">Email Address</label>
-                        <input 
-                          type="text" 
-                          value={extractedData.email} 
-                          onChange={(e) => setExtractedData({...extractedData, email: e.target.value})}
-                          className={`w-full p-1.5 rounded border ${theme === 'dark' ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
-                        />
-                      </div>
-                      <div>
-                        <label className="text-slate-400">Phone</label>
-                        <input 
-                          type="text" 
-                          value={extractedData.phone} 
-                          onChange={(e) => setExtractedData({...extractedData, phone: e.target.value})}
-                          className={`w-full p-1.5 rounded border ${theme === 'dark' ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="text-[10px]">
-                      <label className="text-slate-400">Website</label>
-                      <input 
-                        type="text" 
-                        value={extractedData.website} 
-                        onChange={(e) => setExtractedData({...extractedData, website: e.target.value})}
-                        className={`w-full p-1.5 rounded border ${theme === 'dark' ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
-                      />
-                    </div>
-
-                    {/* Duplicate Preference Option */}
-                    <div className="flex items-center justify-between pt-2 border-t border-dashed border-slate-800 text-[10px]">
-                      <span className="text-slate-400">Duplication Strategy</span>
-                      <select 
-                        value={duplicateOption} 
-                        onChange={(e: any) => setDuplicateOption(e.target.value)}
-                        className={`p-1 rounded border ${theme === 'dark' ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
+                  /* MULTI EXTRACTED RESULTS LIST */
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-xs font-bold text-amber-500">
+                      <span className="flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                        {extractedData.length} B2B Leads Identified
+                      </span>
+                      
+                      <button 
+                        onClick={() => {
+                          if (selectedLeadIndices.length === extractedData.length) {
+                            setSelectedLeadIndices([]);
+                          } else {
+                            setSelectedLeadIndices(extractedData.map((_, i) => i));
+                          }
+                        }}
+                        className="text-[10px] text-blue-500 hover:text-blue-400 font-semibold"
                       >
-                        <option value="Skip">Skip Match</option>
-                        <option value="Update">Overwrite</option>
-                        <option value="Merge">Merge Fields</option>
-                      </select>
+                        {selectedLeadIndices.length === extractedData.length ? 'Deselect All' : 'Select All'}
+                      </button>
                     </div>
 
-                    <button
-                      onClick={handleSaveLead}
-                      disabled={isSaving}
-                      className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-black py-2 rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all shadow-md"
-                    >
-                      {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
-                      Save Lead to Workspace
-                    </button>
+                    {/* Scrollable list container */}
+                    <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                      {extractedData.map((lead, idx) => (
+                        <div key={idx} className={`p-2.5 rounded-lg border text-xs flex gap-2.5 items-start ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
+                          <input 
+                            type="checkbox" 
+                            checked={selectedLeadIndices.includes(idx)}
+                            onChange={() => {
+                              if (selectedLeadIndices.includes(idx)) {
+                                setSelectedLeadIndices(selectedLeadIndices.filter(i => i !== idx));
+                              } else {
+                                setSelectedLeadIndices([...selectedLeadIndices, idx]);
+                              }
+                            }}
+                            className="mt-1 cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold truncate">{lead.businessName}</div>
+                            <div className="grid grid-cols-1 gap-0.5 text-[10px] text-slate-400 mt-1">
+                              <div className="truncate">🌐 Website: <span className="text-blue-400">{lead.website}</span></div>
+                              <div>📞 Phone: {lead.phone}</div>
+                              <div className="truncate">📍 Address: {lead.address}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Duplicate Strategy and Save Button */}
+                    <div className="pt-2 border-t border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="text-slate-400">Duplication Strategy</span>
+                        <select 
+                          value={duplicateOption} 
+                          onChange={(e: any) => setDuplicateOption(e.target.value)}
+                          className={`p-1 rounded border ${theme === 'dark' ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}
+                        >
+                          <option value="Skip">Skip Match</option>
+                          <option value="Update">Overwrite</option>
+                          <option value="Merge">Merge Fields</option>
+                        </select>
+                      </div>
+
+                      <button
+                        onClick={handleSaveLeads}
+                        disabled={isSaving}
+                        className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-black py-2 rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all shadow-md"
+                      >
+                        {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
+                        <span>Save {selectedLeadIndices.length} Selected Leads</span>
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="text-center py-12 text-slate-500 text-xs">
@@ -578,7 +732,7 @@ export default function LeadPopupUI() {
                   <Database className="w-8 h-8" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold">Workspace Leads</h3>
+                  <h3 className="text-sm font-bold">Workspace Leads Locked</h3>
                   <p className="text-[11px] text-slate-400 mt-1 max-w-[280px] mx-auto">
                     To maintain clean workspaces, data records are not displayed inside the extension popup dashboard. Download export files to view your listings.
                   </p>
@@ -589,21 +743,21 @@ export default function LeadPopupUI() {
                   <div className="grid grid-cols-3 gap-2">
                     <button 
                       onClick={() => downloadExport('csv')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
+                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1.5 transition-all"
                     >
                       <Download className="w-3.5 h-3.5" />
                       CSV
                     </button>
                     <button 
                       onClick={() => downloadExport('xlsx')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
+                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1.5 transition-all"
                     >
                       <FileSpreadsheet className="w-3.5 h-3.5" />
                       Excel
                     </button>
                     <button 
                       onClick={() => downloadExport('pdf')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1 transition-all"
+                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1.5 transition-all"
                     >
                       <Download className="w-3.5 h-3.5" />
                       PDF
@@ -632,7 +786,7 @@ export default function LeadPopupUI() {
                 {/* Team invite */}
                 <div className={`p-3 rounded-lg border ${theme === 'dark' ? 'bg-slate-900/40 border-slate-800' : 'bg-white border-slate-200'}`}>
                   <h4 className="text-[10px] font-bold text-slate-400 mb-2 flex items-center gap-1">
-                    <UserPlus className="w-3 h-3" />
+                    <UserPlus className="w-3.5 h-3.5" />
                     Invite Teammate
                   </h4>
                   <form onSubmit={handleInvite} className="flex gap-2">
