@@ -86,7 +86,7 @@ export default function LeadPopupUI() {
       fetchLeads();
       fetchWorkspaces();
     }
-  }, [token]);
+  }, [token, activeTab]);
 
   const toggleTheme = () => {
     const nextTheme = theme === 'dark' ? 'light' : 'dark';
@@ -494,9 +494,7 @@ export default function LeadPopupUI() {
       <header className={`p-4 border-b ${theme === 'dark' ? 'border-slate-800 bg-slate-900/60' : 'border-slate-200 bg-white/60'} flex items-center justify-between`}>
         <div className="flex items-center gap-2">
           {/* Custom yellow folder logo emblem */}
-          <div className="w-8 h-8 rounded-lg bg-amber-400 flex items-center justify-center font-bold text-slate-950 shadow-md">
-            📂
-          </div>
+          <img src="icon128.png" className="w-8 h-8 rounded-lg object-contain shadow-md" alt="Leadsilly" />
           <div>
             <h1 className="text-sm font-black tracking-tight flex items-center gap-1">
               leads<span className="text-amber-500">silly</span>
