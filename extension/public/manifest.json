@@ -11,8 +11,8 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://*/*",
-    "http://*/*"
+    "http://localhost:5000/*",
+    "https://leadsilly.com/*"
   ],
   "icons": {
     "16": "icon16.png",
