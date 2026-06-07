@@ -26,18 +26,32 @@ interface LeadData {
 
 const BACKEND_URL = 'http://localhost:5000';
 
+// Toggle this to false when publishing to the Chrome Web Store.
+// When false, the email signup forms are hidden and only Google Sign-In is active.
+const IS_DEV_MODE = false;
+
+const PLAN_LIMITS = {
+  Free: 50,
+  Individual: 500,
+  Team: 2500,
+  Agency: 10000
+};
+
 export default function LeadPopupUI() {
   const [activeTab, setActiveTab] = useState<'extract' | 'dashboard' | 'settings'>('extract');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [user, setUser] = useState<any>(null);
   const [token, setToken] = useState<string | null>(null);
   
-  // Extraction states (changed from single to array for multi-leads)
+  // Extraction states
   const [extractedData, setExtractedData] = useState<LeadData[] | null>(null);
   const [selectedLeadIndices, setSelectedLeadIndices] = useState<number[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [duplicateOption, setDuplicateOption] = useState<'Skip' | 'Update' | 'Merge'>('Skip');
+  
+  // Usage credits state
+  const [creditsUsed, setCreditsUsed] = useState(0);
   
   // Database leads states
   const [leadsList, setLeadsList] = useState<LeadData[]>([]);
@@ -66,7 +80,12 @@ export default function LeadPopupUI() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  // 1. Sync Authentication on load
+  // Get current plan's allowed limit
+  const currentPlan = (user?.planType || 'Free') as keyof typeof PLAN_LIMITS;
+  const maxLimit = PLAN_LIMITS[currentPlan] || 50;
+  const remainingCredits = Math.max(0, maxLimit - creditsUsed);
+
+  // 1. Sync Authentication & Credits on load
   useEffect(() => {
     const savedToken = localStorage.getItem('jwt_token');
     const savedUser = localStorage.getItem('user_details');
@@ -78,13 +97,23 @@ export default function LeadPopupUI() {
     const savedTheme = localStorage.getItem('app_theme') || 'dark';
     setTheme(savedTheme as 'dark' | 'light');
     document.documentElement.className = savedTheme;
+
+    // Load mock usage credits if in local mode
+    const today = new Date().toISOString().split('T')[0];
+    const localUsage = JSON.parse(localStorage.getItem('mock_usage_credits') || '{}');
+    if (localUsage.date === today) {
+      setCreditsUsed(localUsage.count || 0);
+    } else {
+      setCreditsUsed(0);
+    }
   }, []);
 
-  // Fetch leads and workspaces if logged in
+  // Fetch leads and workspaces if logged in or tab switches
   useEffect(() => {
     if (token) {
       fetchLeads();
       fetchWorkspaces();
+      fetchCreditsFromServer();
     }
   }, [token, activeTab]);
 
@@ -93,6 +122,20 @@ export default function LeadPopupUI() {
     setTheme(nextTheme);
     localStorage.setItem('app_theme', nextTheme);
     document.documentElement.className = nextTheme;
+  };
+
+  // Fetch usage stats from server
+  const fetchCreditsFromServer = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/analytics`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok && data.dailyUsage !== undefined) {
+        setCreditsUsed(data.dailyUsage);
+      }
+    } catch (e) {}
   };
 
   // 2. Auth via Chrome Identity
@@ -105,8 +148,12 @@ export default function LeadPopupUI() {
         setUser(res.user);
         showToast(`Welcome back, ${res.user.name}!`);
       } else {
-        // Fallback local mock login automatically
-        handleLocalFallbackLogin();
+        // Fallback local mock login automatically if dev mode is enabled
+        if (IS_DEV_MODE) {
+          handleLocalFallbackLogin();
+        } else {
+          showToast('Authentication failed or cancelled', 'error');
+        }
       }
     });
   };
@@ -166,7 +213,7 @@ export default function LeadPopupUI() {
     showToast('Logged out successfully', 'info');
   };
 
-  // 3. Lead Extraction Trigger (Array output)
+  // 3. Lead Extraction Trigger
   const handleExtract = async () => {
     setIsExtracting(true);
     setExtractedData(null);
@@ -207,7 +254,7 @@ export default function LeadPopupUI() {
     });
   };
 
-  // 4. Save selected leads (Bulk backend / local fallback handler)
+  // 4. Save selected leads (Decrements and saves local/live credits)
   const handleSaveLeads = () => {
     if (!extractedData || !token) return;
     
@@ -215,6 +262,11 @@ export default function LeadPopupUI() {
     
     if (leadsToSave.length === 0) {
       showToast('No leads selected to save', 'error');
+      return;
+    }
+
+    if (leadsToSave.length > remainingCredits) {
+      showToast(`Not enough credits remaining for this action!`, 'error');
       return;
     }
 
@@ -233,6 +285,15 @@ export default function LeadPopupUI() {
       });
       
       localStorage.setItem('mock_leads_db', JSON.stringify(currentLeads));
+      
+      // Update local credits usage
+      const newCreditsUsed = creditsUsed + leadsToSave.length;
+      setCreditsUsed(newCreditsUsed);
+      localStorage.setItem('mock_usage_credits', JSON.stringify({
+        date: new Date().toISOString().split('T')[0],
+        count: newCreditsUsed
+      }));
+
       setLeadsList(currentLeads);
       setIsSaving(false);
       showToast(`Saved ${leadsToSave.length} leads successfully!`);
@@ -260,12 +321,18 @@ export default function LeadPopupUI() {
         if (completed === leadsToSave.length) {
           setIsSaving(false);
           if (errors === leadsToSave.length) {
-            // Server offline fallback
+            // Server offline fallback local save
             saveLocally();
           } else {
             showToast(`Saved ${savedCount} leads to workspace!`);
+            
+            // Increment live credits locally to sync instantly
+            const newCreditsUsed = creditsUsed + savedCount;
+            setCreditsUsed(newCreditsUsed);
+
             setExtractedData(null);
             fetchLeads();
+            fetchCreditsFromServer();
           }
         }
       });
@@ -365,7 +432,7 @@ export default function LeadPopupUI() {
     }
   };
 
-  // 9. CLIENT-SIDE DOWNLOAD EXPORTER (Ensures direct download works 100% offline)
+  // 9. CLIENT-SIDE DOWNLOAD EXPORTER
   const downloadExport = (format: 'csv' | 'xlsx' | 'pdf') => {
     if (leadsList.length === 0) {
       showToast('No leads available in workspace to export', 'error');
@@ -398,7 +465,6 @@ export default function LeadPopupUI() {
     }
 
     if (format === 'xlsx') {
-      // Excel-compatible TSV format (opens cleanly upon double click in MS Excel)
       const headers = 'Name\tBusiness Name\tEmail\tPhone\tWebsite\tAddress\tLinkedIn\tSource URL\tDate Extracted\n';
       const rows = leadsList.map(l => {
         return `${l.name || 'N/A'}\t${l.businessName || 'N/A'}\t${l.email || 'N/A'}\t${l.phone || 'N/A'}\t${l.website || 'N/A'}\t${l.address || 'N/A'}\t${l.linkedinUrl || 'N/A'}\t${l.sourceUrl || 'N/A'}\t${l.created_at || new Date().toISOString()}`;
@@ -416,7 +482,6 @@ export default function LeadPopupUI() {
     }
 
     if (format === 'pdf') {
-      // PDF Printable Document Layout trigger
       const pdfHtml = `
         <html>
           <head>
@@ -533,82 +598,90 @@ export default function LeadPopupUI() {
               <h2 className="text-sm font-bold">Find B2B Contacts Instantly</h2>
             </div>
 
-            {/* Local Sign In / Sign Up tab selectors */}
-            <div className="flex border-b border-slate-800 mb-4 text-xs font-semibold">
-              <button 
-                onClick={() => setAuthMode('signin')}
-                className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signin' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
-              >
-                Sign In
-              </button>
-              <button 
-                onClick={() => setAuthMode('signup')}
-                className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signup' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
-              >
-                Sign Up (New User)
-              </button>
-            </div>
-
-            <form onSubmit={handleEmailAuth} className="space-y-3">
-              {authMode === 'signup' && (
-                <div>
-                  <label className="text-[10px] text-slate-400">Full Name</label>
-                  <input 
-                    type="text" 
-                    placeholder="Enter name"
-                    value={nameInput}
-                    onChange={(e) => setNameInput(e.target.value)}
-                    className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                  />
-                </div>
-              )}
-              <div>
-                <label className="text-[10px] text-slate-400">Email Address</label>
-                <input 
-                  type="email" 
-                  placeholder="name@company.com"
-                  value={emailInput}
-                  onChange={(e) => setEmailInput(e.target.value)}
-                  className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-slate-400">Password</label>
-                <div className="relative">
-                  <input 
-                    type={showPassword ? "text" : "password"} 
-                    placeholder="••••••••"
-                    value={passwordInput}
-                    onChange={(e) => setPasswordInput(e.target.value)}
-                    className={`w-full p-2 mt-1 pr-8 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                  />
+            {/* Display Email tab forms if in developer configuration */}
+            {IS_DEV_MODE ? (
+              <>
+                <div className="flex border-b border-slate-800 mb-4 text-xs font-semibold">
                   <button 
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-2 top-3 text-slate-400 hover:text-slate-200"
+                    onClick={() => setAuthMode('signin')}
+                    className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signin' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
                   >
-                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    Sign In
+                  </button>
+                  <button 
+                    onClick={() => setAuthMode('signup')}
+                    className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signup' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    Sign Up (New User)
                   </button>
                 </div>
+
+                <form onSubmit={handleEmailAuth} className="space-y-3">
+                  {authMode === 'signup' && (
+                    <div>
+                      <label className="text-[10px] text-slate-400">Full Name</label>
+                      <input 
+                        type="text" 
+                        placeholder="Enter name"
+                        value={nameInput}
+                        onChange={(e) => setNameInput(e.target.value)}
+                        className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                      />
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-[10px] text-slate-400">Email Address</label>
+                    <input 
+                      type="email" 
+                      placeholder="name@company.com"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                      className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400">Password</label>
+                    <div className="relative">
+                      <input 
+                        type={showPassword ? "text" : "password"} 
+                        placeholder="••••••••"
+                        value={passwordInput}
+                        onChange={(e) => setPasswordInput(e.target.value)}
+                        className={`w-full p-2 mt-1 pr-8 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                      />
+                      <button 
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-2 top-3 text-slate-400 hover:text-slate-200"
+                      >
+                        {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button 
+                    type="submit"
+                    className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2 rounded-lg text-xs mt-2 transition-all shadow-md"
+                  >
+                    {authMode === 'signup' ? 'Create Free Account' : 'Sign In'}
+                  </button>
+                </form>
+
+                <div className="flex items-center my-4">
+                  <div className="flex-1 border-t border-slate-800"></div>
+                  <span className="text-[9px] text-slate-500 px-2">OR</span>
+                  <div className="flex-1 border-t border-slate-800"></div>
+                </div>
+              </>
+            ) : (
+              <div className="text-center text-xs text-slate-400 mb-6">
+                Sign in with your Google Workspace account to begin extracting leads.
               </div>
-
-              <button 
-                type="submit"
-                className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2 rounded-lg text-xs mt-2 transition-all shadow-md"
-              >
-                {authMode === 'signup' ? 'Create Free Account' : 'Sign In'}
-              </button>
-            </form>
-
-            <div className="flex items-center my-3">
-              <div className="flex-1 border-t border-slate-800"></div>
-              <span className="text-[9px] text-slate-500 px-2">OR</span>
-              <div className="flex-1 border-t border-slate-800"></div>
-            </div>
+            )}
 
             <button 
               onClick={handleLogin}
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-all hover-lift"
+              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all hover-lift shadow-md"
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-300" />
               <span>Sign In with Google</span>
@@ -619,6 +692,14 @@ export default function LeadPopupUI() {
           <>
             {activeTab === 'extract' && (
               <div className="space-y-4">
+                {/* Credits indicator badge */}
+                <div className={`p-2 rounded-lg border text-xs flex justify-between items-center ${theme === 'dark' ? 'bg-slate-900/35 border-slate-800' : 'bg-white border-slate-200'}`}>
+                  <span className="text-slate-400 font-semibold">Credits Limit ({currentPlan} Plan)</span>
+                  <span className={`font-black px-2 py-0.5 rounded ${remainingCredits < 10 ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                    {remainingCredits} / {maxLimit} Left
+                  </span>
+                </div>
+
                 {/* Extraction Control */}
                 <div className="flex gap-2">
                   <button
@@ -664,7 +745,7 @@ export default function LeadPopupUI() {
                     </div>
 
                     {/* Scrollable list container */}
-                    <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                    <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
                       {extractedData.map((lead, idx) => (
                         <div key={idx} className={`p-2.5 rounded-lg border text-xs flex gap-2.5 items-start ${theme === 'dark' ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
                           <input 
@@ -709,7 +790,7 @@ export default function LeadPopupUI() {
                       <button
                         onClick={handleSaveLeads}
                         disabled={isSaving}
-                        className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-black py-2 rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all shadow-md"
+                        className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-black py-2.5 rounded-lg text-xs flex items-center justify-center gap-1.5 transition-all shadow-md"
                       >
                         {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
                         <span>Save {selectedLeadIndices.length} Selected Leads</span>
@@ -725,41 +806,54 @@ export default function LeadPopupUI() {
             )}
 
             {activeTab === 'dashboard' && (
-              <div className="h-full flex flex-col justify-center py-6 text-center space-y-6">
-                <div className="w-16 h-16 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mx-auto text-blue-500">
-                  <Database className="w-8 h-8" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold">Workspace Leads Locked</h3>
-                  <p className="text-[11px] text-slate-400 mt-1 max-w-[280px] mx-auto">
-                    To maintain clean workspaces, data records are not displayed inside the extension popup dashboard. Download export files to view your listings.
-                  </p>
+              <div className="space-y-4">
+                {/* Credits indicator badge */}
+                <div className={`p-2 rounded-lg border text-xs flex justify-between items-center ${theme === 'dark' ? 'bg-slate-900/35 border-slate-800' : 'bg-white border-slate-200'}`}>
+                  <span className="text-slate-400 font-semibold">Credits Limit ({currentPlan} Plan)</span>
+                  <span className={`font-black px-2 py-0.5 rounded ${remainingCredits < 10 ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                    {remainingCredits} / {maxLimit} Left
+                  </span>
                 </div>
 
-                <div className="pt-4 border-t border-slate-800 w-full">
-                  <div className="text-[10px] font-bold text-slate-400 mb-3 uppercase tracking-wider">Download Files</div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <button 
-                      onClick={() => downloadExport('csv')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1.5 transition-all"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      CSV
-                    </button>
-                    <button 
-                      onClick={() => downloadExport('xlsx')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1.5 transition-all"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5" />
-                      Excel
-                    </button>
-                    <button 
-                      onClick={() => downloadExport('pdf')}
-                      className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded text-[10px] flex items-center justify-center gap-1.5 transition-all"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      PDF
-                    </button>
+                <div className="flex flex-col justify-center py-2 text-center space-y-4">
+                  <div className="w-12 h-12 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mx-auto text-blue-500">
+                    <Database className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold">Workspace Leads Locked</h3>
+                    <p className="text-[10px] text-slate-400 mt-1 max-w-[280px] mx-auto">
+                      To maintain clean workspaces, data records are not displayed inside the extension popup dashboard. Download export files to view your listings.
+                    </p>
+                    <div className="text-slate-500 text-[9px] mt-2 font-semibold">
+                      Total Extracted Leads: {leadsList.length} records
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800 w-full">
+                    <div className="text-[9px] font-bold text-slate-400 mb-2 uppercase tracking-wider">Download Files</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button 
+                        onClick={() => downloadExport('csv')}
+                        className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-1.5 rounded text-[9px] flex items-center justify-center gap-1 transition-all"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        CSV
+                      </button>
+                      <button 
+                        onClick={() => downloadExport('xlsx')}
+                        className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-1.5 rounded text-[9px] flex items-center justify-center gap-1 transition-all"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5" />
+                        Excel
+                      </button>
+                      <button 
+                        onClick={() => downloadExport('pdf')}
+                        className="bg-slate-800 hover:bg-slate-700 text-white font-semibold py-1.5 rounded text-[9px] flex items-center justify-center gap-1 transition-all"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        PDF
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -827,31 +921,36 @@ export default function LeadPopupUI() {
       </main>
 
       {/* FOOTER TAB NAV */}
-      {token && (
-        <footer className={`p-2 border-t ${theme === 'dark' ? 'border-slate-850 bg-slate-950' : 'border-slate-200 bg-white'} flex justify-around text-xs`}>
-          <button 
-            onClick={() => setActiveTab('extract')}
-            className={`flex flex-col items-center gap-1 py-1 px-4 rounded-lg transition-colors ${activeTab === 'extract' ? 'text-amber-500 font-bold' : 'text-slate-400'}`}
-          >
-            <Search className="w-4 h-4" />
-            <span className="text-[9px]">Scraper</span>
-          </button>
-          <button 
-            onClick={() => setActiveTab('dashboard')}
-            className={`flex flex-col items-center gap-1 py-1 px-4 rounded-lg transition-colors ${activeTab === 'dashboard' ? 'text-amber-500 font-bold' : 'text-slate-400'}`}
-          >
-            <Database className="w-4 h-4" />
-            <span className="text-[9px]">Workspace</span>
-          </button>
-          <button 
-            onClick={() => setActiveTab('settings')}
-            className={`flex flex-col items-center gap-1 py-1 px-4 rounded-lg transition-colors ${activeTab === 'settings' ? 'text-amber-500 font-bold' : 'text-slate-400'}`}
-          >
-            <Settings className="w-4 h-4" />
-            <span className="text-[9px]">Settings</span>
-          </button>
-        </footer>
-      )}
+      <footer className={`p-2 border-t ${theme === 'dark' ? 'border-slate-850 bg-slate-950' : 'border-slate-200 bg-white'} flex flex-col items-center gap-1.5`}>
+        {token && (
+          <div className="flex justify-around text-xs w-full">
+            <button 
+              onClick={() => setActiveTab('extract')}
+              className={`flex flex-col items-center gap-1 py-1 px-4 rounded-lg transition-colors ${activeTab === 'extract' ? 'text-amber-500 font-bold' : 'text-slate-400'}`}
+            >
+              <Search className="w-4 h-4" />
+              <span className="text-[9px]">Scraper</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab('dashboard')}
+              className={`flex flex-col items-center gap-1 py-1 px-4 rounded-lg transition-colors ${activeTab === 'dashboard' ? 'text-amber-500 font-bold' : 'text-slate-400'}`}
+            >
+              <Database className="w-4 h-4" />
+              <span className="text-[9px]">Workspace</span>
+            </button>
+            <button 
+              onClick={() => setActiveTab('settings')}
+              className={`flex flex-col items-center gap-1 py-1 px-4 rounded-lg transition-colors ${activeTab === 'settings' ? 'text-amber-500 font-bold' : 'text-slate-400'}`}
+            >
+              <Settings className="w-4 h-4" />
+              <span className="text-[9px]">Settings</span>
+            </button>
+          </div>
+        )}
+        <div className="text-[9px] text-slate-500 text-center font-medium border-t border-dashed border-slate-900 pt-1.5 w-full">
+          Official Website: <a href="https://leadsilly.com" target="_blank" className="text-amber-500 font-semibold hover:underline">leadsilly.com</a>
+        </div>
+      </footer>
     </div>
   );
 }

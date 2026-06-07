@@ -48,12 +48,21 @@ export const getTeamDashboardAnalytics = async (req: AuthenticatedRequest, res: 
     );
     const totalExports = parseInt(exportsRes.rows[0].count);
 
+    // 6. Current Day's Usage for Credits calculation
+    const today = new Date().toISOString().split('T')[0];
+    const dailyUsageRes = await pool.query(
+      'SELECT count FROM usage WHERE user_id = $1 AND date = $2',
+      [req.user?.id, today]
+    );
+    const dailyUsage = parseInt(dailyUsageRes.rows[0]?.count || 0);
+
     return res.json({
       totalLeads,
       leadsByDate: leadsByDateRes.rows,
       topDomains: topDomainsRes.rows,
       topMembers: topMembersRes.rows,
-      totalExports
+      totalExports,
+      dailyUsage
     });
   } catch (error) {
     console.error('Analytics fetch error:', error);
