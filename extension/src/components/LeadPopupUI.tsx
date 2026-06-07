@@ -191,7 +191,7 @@ export default function LeadPopupUI() {
             chrome.tabs.sendMessage(activeTabId, { action: 'extract_leads' }, (retryRes) => {
               if (retryRes && retryRes.success && Array.isArray(retryRes.data)) {
                 setExtractedData(retryRes.data);
-                setSelectedLeadIndices(retryRes.data.map((_, i) => i));
+                setSelectedLeadIndices(retryRes.data.map((_: any, i: number) => i));
                 showToast(`Scraped ${retryRes.data.length} listings!`);
               } else {
                 showToast('Unable to extract data from this page schema.', 'error');
@@ -200,7 +200,7 @@ export default function LeadPopupUI() {
           });
         } else if (Array.isArray(res.data)) {
           setExtractedData(res.data);
-          setSelectedLeadIndices(res.data.map((_, i) => i));
+          setSelectedLeadIndices(res.data.map((_: any, i: number) => i));
           showToast(`Scraped ${res.data.length} listings!`);
         }
       });
@@ -656,7 +656,7 @@ export default function LeadPopupUI() {
                           if (selectedLeadIndices.length === extractedData.length) {
                             setSelectedLeadIndices([]);
                           } else {
-                            setSelectedLeadIndices(extractedData.map((_, i) => i));
+                            setSelectedLeadIndices(extractedData.map((_: any, i: number) => i));
                           }
                         }}
                         className="text-[10px] text-blue-500 hover:text-blue-400 font-semibold"
