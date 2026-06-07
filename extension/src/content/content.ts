@@ -16,7 +16,7 @@ interface ExtractedLead {
   sourceType: string;
 }
 
-// Regular Expressions for B2B phone numbers (matches 094148 61076, +91-xxx, etc.)
+// Phone Regex to match standard B2B phones (including spacing like 094148 61076)
 const PHONE_REGEX = /(\+?\d{1,4}[\s.-]?)?\(?\d{2,6}\)?[\s.-]?\d{3,6}[\s.-]?\d{3,6}/g;
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
@@ -36,6 +36,11 @@ function extractAddressFromText(text: string): string {
     const lowerLine = line.toLowerCase();
     const hasKeyword = addressKeywords.some(keyword => lowerLine.includes(keyword));
     const hasZip = /\b\d{5,6}(-\d{4})?\b/.test(line);
+    
+    // Ignore review quotes
+    if (line.startsWith('"') || line.endsWith('"') || line.includes('“') || line.includes('”')) {
+      continue;
+    }
     
     if (hasKeyword || hasZip) {
       return line;
@@ -60,7 +65,6 @@ function scrapePageData(): ExtractedLead[] {
 
   // A. Google Search / Maps results parsing
   if (sourceDomain.includes('google.com')) {
-    // Find all potential listing titles on the page
     const titleEls = Array.from(document.querySelectorAll('div.dbg0pd, .OSrXXb, [data-attrid="title"], a.C7rsq, div[role="heading"] span'));
     const seenNames = new Set<string>();
 
@@ -74,12 +78,14 @@ function scrapePageData(): ExtractedLead[] {
       // Traversal upwards to find the container card representing this entire business block
       let cardContainer: HTMLElement = titleEl as HTMLElement;
       let parent = titleEl.parentElement;
+      
+      // Go up parent chain, stop if parent contains maps/website links (standard Google local search card element)
       while (parent && parent.tagName !== 'BODY') {
-        const siblingTitles = parent.querySelectorAll('div.dbg0pd, .OSrXXb, [data-attrid="title"], a.C7rsq, div[role="heading"] span');
-        if (siblingTitles.length > 1) {
-          break; // Stop going up if the container spans multiple businesses
+        const hasDetails = parent.querySelector('a[href*="maps"], a[href*="google.com/maps"], a[aria-label*="website"], a[aria-label*="direction"]');
+        if (hasDetails) {
+          cardContainer = parent;
+          break;
         }
-        cardContainer = parent;
         parent = parent.parentElement;
       }
 
@@ -96,7 +102,8 @@ function scrapePageData(): ExtractedLead[] {
           const isWebsiteBtn = text.includes('website') || aria.includes('website') || aria.includes('visit website') || link.querySelector('.globe, svg, img');
           if (isWebsiteBtn) {
             if (href.includes('google.com/url?')) {
-              const urlParam = new URL(href, window.location.href).searchParams.get('url');
+              const urlObj = new URL(href, window.location.href);
+              const urlParam = urlObj.searchParams.get('url') || urlObj.searchParams.get('q');
               if (urlParam) {
                 website = urlParam;
                 break;
@@ -109,7 +116,7 @@ function scrapePageData(): ExtractedLead[] {
         }
       }
 
-      // If no explicit "Website" button found, check other external links in the card
+      // Fallback: Check for external links inside card container
       if (website === 'N/A') {
         for (const link of links) {
           const href = link.getAttribute('href') || '';
@@ -120,25 +127,30 @@ function scrapePageData(): ExtractedLead[] {
         }
       }
 
-      // 2. Extract Phone & Address using middle dot separation split heuristic
+      // 2. Extract Phone & Address
       let phone = 'N/A';
       let address = 'N/A';
       const innerText = cardContainer.innerText || '';
       
       const parts = innerText.split(/·|•|\n/).map(p => p.trim()).filter(Boolean);
       parts.forEach(part => {
+        // Ignore review quotes
+        if (part.startsWith('"') || part.endsWith('"') || part.includes('“') || part.includes('”') || part.toLowerCase().includes('choching') || part.toLowerCase().includes('coaching') || part.toLowerCase().includes('excellent') || part.toLowerCase().includes('teacher')) {
+          return;
+        }
+
         const digits = part.replace(/\D/g, '');
-        // Phone check
+        // Phone match
         if (digits.length >= 8 && digits.length <= 15 && (part.startsWith('0') || part.startsWith('+') || part.startsWith('9') || part.startsWith('7') || part.startsWith('8'))) {
           phone = part;
         } else if (part.toLowerCase().includes('closed') || part.toLowerCase().includes('open') || part.includes('★') || part.includes('reviews') || part.includes('star')) {
-          // Skip hours/stars
-        } else if (part.length > 5 && (part.includes(',') || part.includes('Road') || part.includes('Rd') || part.includes('Bihar'))) {
+          // Skip ratings/hours
+        } else if (part.length > 5 && (part.includes(',') || part.includes('Road') || part.includes('Rd') || part.includes('Bihar') || part.includes('Colony'))) {
           address = part;
         }
       });
 
-      // Fallback regex for phone if N/A
+      // Fallback regex for phone number search
       if (phone === 'N/A') {
         const matches = innerText.match(PHONE_REGEX);
         if (matches) {
@@ -152,7 +164,7 @@ function scrapePageData(): ExtractedLead[] {
         }
       }
 
-      // Fallback address parsing from card text block
+      // Fallback address parsing
       if (address === 'N/A') {
         address = extractAddressFromText(innerText) || 'N/A';
       }
