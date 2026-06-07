@@ -15,17 +15,35 @@ export const googleSignIn = async (req: Request, res: Response) => {
 
     // Standard OAuth token verification, fallback to mock if dev mode
     if (idToken && idToken !== 'mock_token') {
-      const ticket = await client.verifyIdToken({
-        idToken,
-        audience: process.env.GOOGLE_CLIENT_ID,
-      });
-      const payload = ticket.getPayload();
-      if (!payload || !payload.email) {
-        return res.status(400).json({ error: 'Invalid Google Token' });
+      try {
+        const ticket = await client.verifyIdToken({
+          idToken,
+          audience: process.env.GOOGLE_CLIENT_ID,
+        });
+        const payload = ticket.getPayload();
+        if (payload && payload.email) {
+          email = payload.email;
+          name = payload.name || email.split('@')[0];
+          avatarUrl = payload.picture || '';
+        } else {
+          throw new Error('ID Token payload empty');
+        }
+      } catch (err) {
+        // Fallback: Verify as Access Token by calling Google Userinfo API
+        const userinfoRes = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo?access_token=${idToken}`);
+        if (userinfoRes.ok) {
+          const payload = (await userinfoRes.json()) as any;
+          if (payload && payload.email) {
+            email = payload.email;
+            name = payload.name || email.split('@')[0];
+            avatarUrl = payload.picture || '';
+          } else {
+            return res.status(400).json({ error: 'Invalid Google Token (Userinfo empty)' });
+          }
+        } else {
+          return res.status(400).json({ error: 'Invalid Google Token (Failed verification and userinfo check)' });
+        }
       }
-      email = payload.email;
-      name = payload.name || email.split('@')[0];
-      avatarUrl = payload.picture || '';
     } else if (mockUser) {
       // Allow testing/development sign-in with mock user
       email = mockUser.email;
@@ -70,6 +88,16 @@ export const googleSignIn = async (req: Request, res: Response) => {
       await pool.query(
         'INSERT INTO subscriptions (user_id, organization_id, plan_type, status) VALUES ($1, $2, $3, $4)',
         [user.id, organization.id, 'Free', 'active']
+      );
+    }
+    // Save/update the Google OAuth Access Token in oauth_tokens table for sheet exports
+    if (idToken && idToken !== 'mock_token') {
+      await pool.query(
+        `INSERT INTO oauth_tokens (user_id, provider, access_token)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, provider)
+         DO UPDATE SET access_token = $3, updated_at = CURRENT_TIMESTAMP`,
+        [user.id, 'google', idToken]
       );
     }
 

@@ -46,20 +46,20 @@ export const createCheckoutSession = async (req: AuthenticatedRequest, res: Resp
         mode: 'subscription',
         success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/billing/cancel`,
-        metadata: { userId, planType },
-        customer_email: email,
+        metadata: { userId: userId || '', planType: planType || '' },
+        customer_email: email || undefined,
       });
 
       return res.json({ checkoutUrl: session.url });
     } else if (gateway === 'razorpay') {
       // Create Razorpay Order
       const amount = prices[planType as keyof typeof prices]?.inr || 0;
-      const order = await razorpay.orders.create({
+      const order = (await razorpay.orders.create({
         amount, // in paisa
         currency: 'INR',
         receipt: `receipt_${Date.now()}`,
-        notes: { userId, planType }
-      });
+        notes: { userId: userId || '', planType: planType || '' }
+      })) as any;
 
       return res.json({
         orderId: order.id,

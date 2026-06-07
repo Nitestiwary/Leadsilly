@@ -57,6 +57,7 @@ export default function LeadPopupUI() {
   const [leadsList, setLeadsList] = useState<LeadData[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingLeads, setIsLoadingLeads] = useState(false);
+  const [isSyncingSheets, setIsSyncingSheets] = useState(false);
   
   // Settings & Team States
   const [inviteEmail, setInviteEmail] = useState('');
@@ -542,6 +543,37 @@ export default function LeadPopupUI() {
     }
   };
 
+  const handleGoogleSheetsSync = async () => {
+    if (leadsList.length === 0) {
+      showToast('No leads available in workspace to sync', 'error');
+      return;
+    }
+    setIsSyncingSheets(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/exports/google-sheets`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ append: true })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast('Successfully synced to Google Sheets!');
+        if (data.spreadsheetUrl) {
+          chrome.tabs.create({ url: data.spreadsheetUrl });
+        }
+      } else {
+        showToast(data.error || 'Failed to sync to Google Sheets', 'error');
+      }
+    } catch (e) {
+      showToast('Connection to Google Sheets service failed', 'error');
+    } finally {
+      setIsSyncingSheets(false);
+    }
+  };
+
   return (
     <div className={`w-[390px] h-[580px] flex flex-col justify-between ${theme === 'dark' ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'} relative transition-colors duration-200`}>
       
@@ -834,8 +866,8 @@ export default function LeadPopupUI() {
                     </div>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-800 w-full">
-                    <div className="text-[9px] font-bold text-slate-400 mb-2 uppercase tracking-wider">Download Files</div>
+                  <div className="pt-2 border-t border-slate-800 w-full space-y-2">
+                    <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Download & Sync</div>
                     <div className="grid grid-cols-3 gap-2">
                       <button 
                         onClick={() => downloadExport('csv')}
@@ -859,6 +891,24 @@ export default function LeadPopupUI() {
                         PDF
                       </button>
                     </div>
+
+                    <button
+                      onClick={handleGoogleSheetsSync}
+                      disabled={isSyncingSheets}
+                      className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-lg text-[9px] flex items-center justify-center gap-1.5 transition-all shadow-md mt-1"
+                    >
+                      {isSyncingSheets ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Syncing to Google Sheets...</span>
+                        </>
+                      ) : (
+                        <>
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-300" />
+                          <span>Sync to Google Sheets</span>
+                        </>
+                      )}
+                    </button>
                   </div>
                 </div>
               </div>
