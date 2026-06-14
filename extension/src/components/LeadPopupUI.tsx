@@ -32,10 +32,10 @@ interface LeadData {
   created_at?: string;
 }
 
-const BACKEND_URL = 'https://leadsilly.com';
-// For local testing, change the above to: 'http://localhost:5000'
+const BACKEND_URL = 'http://localhost:5000';
+// For production, change the above to: 'https://leadsilly.com'
 
-const IS_DEV_MODE = false;
+const IS_DEV_MODE = true;
 
 const PLAN_LIMITS = {
   Free: 50,
@@ -213,7 +213,28 @@ export default function LeadPopupUI() {
       }
     } catch (err: any) {
       console.error(err);
-      showToast(err.message || 'Authentication failed. Please check details.', 'error');
+      if (err.code === 'auth/email-already-in-use') {
+        // If the account was created but not verified, let them proceed to verify it
+        try {
+          const fbUser = await firebaseSignIn(emailInput, passwordInput);
+          if (!fbUser.emailVerified) {
+            setFirebaseUser(fbUser);
+            setAuthStep('otp');
+            startResendTimer();
+            showToast('Email already registered but unverified. Resending link...', 'info');
+            await resendVerificationEmail(fbUser);
+            setIsAuthLoading(false);
+            return;
+          } else {
+            showToast('This email is already registered and verified. Please sign in.', 'error');
+            setAuthMode('signin');
+          }
+        } catch (signInErr: any) {
+          showToast('Email already in use. Please sign in or use a different email.', 'error');
+        }
+      } else {
+        showToast(err.message || 'Authentication failed. Please check details.', 'error');
+      }
     } finally {
       setIsAuthLoading(false);
     }
@@ -698,6 +719,9 @@ export default function LeadPopupUI() {
                   </p>
                   <p className="text-[9px] text-slate-500 mt-2 px-4 leading-normal">
                     Please open the email and click the confirmation link, then return here and click the verification button below.
+                  </p>
+                  <p className="text-[9px] text-amber-500/80 mt-1 px-4 italic font-medium">
+                    ⚠️ Don't see it? Please check your <strong>Spam or Junk folder</strong>.
                   </p>
                 </div>
 
