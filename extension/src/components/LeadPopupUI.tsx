@@ -32,10 +32,10 @@ interface LeadData {
   created_at?: string;
 }
 
-const BACKEND_URL = 'http://localhost:5000';
-// For production, change the above to: 'https://leadsilly.com'
+const BACKEND_URL = 'https://leadsilly.com';
+// For local testing, change the above to: 'http://localhost:5000'
 
-const IS_DEV_MODE = true;
+const IS_DEV_MODE = false;
 
 const PLAN_LIMITS = {
   Free: 50,
