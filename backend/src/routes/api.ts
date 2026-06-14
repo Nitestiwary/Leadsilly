@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { googleSignIn } from '../controllers/authController';
+import { googleSignIn, emailSignIn, emailSignUp } from '../controllers/authController';
 import { createLead, getLeads, updateLead, deleteLead } from '../controllers/leadsController';
 import { inviteMember, acceptInvitation, getWorkspaces, createWorkspace } from '../controllers/teamController';
 import { createCheckoutSession, handleRazorpayVerification } from '../controllers/billingController';
@@ -12,6 +12,8 @@ const router = Router();
 
 // Authentication
 router.post('/auth/google', googleSignIn);
+router.post('/auth/login', emailSignIn);
+router.post('/auth/register', emailSignUp);
 
 // Leads Operations (Authenticated)
 router.get('/leads', authenticateToken, getLeads);

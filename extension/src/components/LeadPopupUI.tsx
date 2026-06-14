@@ -24,10 +24,8 @@ interface LeadData {
   created_at?: string;
 }
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = 'https://leadsilly.com';
 
-// Toggle this to false when publishing to the Chrome Web Store.
-// When false, the email signup forms are hidden and only Google Sign-In is active.
 const IS_DEV_MODE = false;
 
 const PLAN_LIMITS = {
@@ -139,69 +137,49 @@ export default function LeadPopupUI() {
     } catch (e) {}
   };
 
-  // 2. Auth via Chrome Identity
-  const handleLogin = () => {
-    chrome.runtime.sendMessage({ action: 'authenticate_user' }, (res) => {
-      if (res && res.success) {
-        localStorage.setItem('jwt_token', res.token);
-        localStorage.setItem('user_details', JSON.stringify(res.user));
-        setToken(res.token);
-        setUser(res.user);
-        showToast(`Welcome back, ${res.user.name}!`);
-      } else {
-        // Fallback local mock login automatically if dev mode is enabled
-        if (IS_DEV_MODE) {
-          handleLocalFallbackLogin();
-        } else {
-          showToast('Authentication failed or cancelled', 'error');
-        }
-      }
-    });
-  };
+  // 2. Auth via Email/Password → real backend
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
 
-  const handleLocalFallbackLogin = () => {
-    const defaultUser = {
-      id: 'local_dev_user_123',
-      email: 'user@leadsilly.com',
-      name: 'Leadsilly Tester',
-      avatarUrl: '',
-      planType: 'Free',
-      workspaceId: 'local_ws_123'
-    };
-    const mockToken = 'mock_jwt_token_leadsilly_local_123';
-    localStorage.setItem('jwt_token', mockToken);
-    localStorage.setItem('user_details', JSON.stringify(defaultUser));
-    setToken(mockToken);
-    setUser(defaultUser);
-    showToast('Signed in automatically via Developer Mode!', 'success');
-  };
-
-  const handleEmailAuth = (e: React.FormEvent) => {
+  const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailInput || !passwordInput) {
       showToast('Please fill out all required fields', 'error');
       return;
     }
     if (authMode === 'signup' && !nameInput) {
-      showToast('Please specify your name', 'error');
+      showToast('Please enter your name', 'error');
       return;
     }
 
-    const matchedUser = {
-      id: 'local_user_' + Math.random().toString(36).substr(2, 9),
-      email: emailInput,
-      name: authMode === 'signup' ? nameInput : emailInput.split('@')[0],
-      avatarUrl: '',
-      planType: 'Free',
-      workspaceId: 'local_ws_123'
-    };
-    const mockToken = 'mock_jwt_token_' + matchedUser.id;
+    setIsAuthLoading(true);
+    try {
+      const endpoint = authMode === 'signup' ? '/api/auth/register' : '/api/auth/login';
+      const body = authMode === 'signup'
+        ? { email: emailInput, password: passwordInput, name: nameInput }
+        : { email: emailInput, password: passwordInput };
 
-    localStorage.setItem('jwt_token', mockToken);
-    localStorage.setItem('user_details', JSON.stringify(matchedUser));
-    setToken(mockToken);
-    setUser(matchedUser);
-    showToast(authMode === 'signup' ? 'Account successfully created!' : 'Signed in successfully!', 'success');
+      const res = await fetch(`${BACKEND_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showToast(data.error || 'Authentication failed', 'error');
+        return;
+      }
+
+      localStorage.setItem('jwt_token', data.token);
+      localStorage.setItem('user_details', JSON.stringify(data.user));
+      setToken(data.token);
+      setUser(data.user);
+      showToast(authMode === 'signup' ? `Welcome, ${data.user.name}! Account created.` : `Welcome back, ${data.user.name}!`);
+    } catch (err: any) {
+      showToast('Network error. Please try again.', 'error');
+    } finally {
+      setIsAuthLoading(false);
+    }
   };
 
   const handleLogout = () => {
@@ -413,24 +391,9 @@ export default function LeadPopupUI() {
 
   // 8. Payment Simulation triggers
   const handleUpgrade = async (planType: string) => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/billing/checkout`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ planType, gateway: 'stripe' })
-      });
-      const data = await res.json();
-      if (res.ok && data.checkoutUrl) {
-        chrome.tabs.create({ url: data.checkoutUrl });
-      } else {
-        showToast('Payment system offline, sandbox checkouts only.', 'error');
-      }
-    } catch (e) {
-      showToast('Failed to start checkout', 'error');
-    }
+    const baseUrl = IS_DEV_MODE ? 'http://localhost:3000' : 'https://leadsilly.com';
+    const checkoutUrl = `${baseUrl}/checkout/?plan=${planType}&token=${encodeURIComponent(token || '')}`;
+    chrome.tabs.create({ url: checkoutUrl });
   };
 
   // 9. CLIENT-SIDE DOWNLOAD EXPORTER
@@ -593,8 +556,14 @@ export default function LeadPopupUI() {
           {/* Custom yellow folder logo emblem */}
           <img src="icon128.png" className="w-8 h-8 rounded-lg object-contain shadow-md" alt="Leadsilly" />
           <div>
-            <h1 className="text-sm font-black tracking-tight flex items-center gap-1">
+            <h1 className="text-sm font-black tracking-tight flex items-center gap-1.5">
               leads<span className="text-amber-500">silly</span>
+              {user && currentPlan !== 'Free' && (
+                <span className="text-[8px] bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 font-black px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow-sm shadow-amber-500/25 animate-pulse uppercase tracking-wider">
+                  <Sparkles className="w-2.5 h-2.5" />
+                  {currentPlan}
+                </span>
+              )}
             </h1>
             <p className="text-[10px] text-slate-400 -mt-1 font-medium">Contact Scraper Engine</p>
           </div>
@@ -648,81 +617,61 @@ export default function LeadPopupUI() {
               </button>
             </div>
 
-            {IS_DEV_MODE ? (
-              <>
-                <form onSubmit={handleEmailAuth} className="space-y-3">
-                  {authMode === 'signup' && (
-                    <div>
-                      <label className="text-[10px] text-slate-400">Full Name</label>
-                      <input 
-                        type="text" 
-                        placeholder="Enter name"
-                        value={nameInput}
-                        onChange={(e) => setNameInput(e.target.value)}
-                        className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                      />
-                    </div>
-                  )}
-                  <div>
-                    <label className="text-[10px] text-slate-400">Email Address</label>
-                    <input 
-                      type="email" 
-                      placeholder="name@company.com"
-                      value={emailInput}
-                      onChange={(e) => setEmailInput(e.target.value)}
-                      className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-400">Password</label>
-                    <div className="relative">
-                      <input 
-                        type={showPassword ? "text" : "password"} 
-                        placeholder="••••••••"
-                        value={passwordInput}
-                        onChange={(e) => setPasswordInput(e.target.value)}
-                        className={`w-full p-2 mt-1 pr-8 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-2 top-3 text-slate-400 hover:text-slate-200"
-                      >
-                        {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <button 
-                    type="submit"
-                    className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2 rounded-lg text-xs mt-2 transition-all shadow-md"
-                  >
-                    {authMode === 'signup' ? 'Create Free Account' : 'Sign In'}
-                  </button>
-                </form>
-
-                <div className="flex items-center my-4">
-                  <div className="flex-1 border-t border-slate-800"></div>
-                  <span className="text-[9px] text-slate-500 px-2">OR</span>
-                  <div className="flex-1 border-t border-slate-800"></div>
+            <form onSubmit={handleEmailAuth} className="space-y-3">
+              {authMode === 'signup' && (
+                <div>
+                  <label className="text-[10px] text-slate-400">Full Name</label>
+                  <input 
+                    type="text" 
+                    placeholder="Enter your full name"
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                    className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                  />
                 </div>
-              </>
-            ) : (
-              <div className="text-center text-xs text-slate-400 mb-6">
-                {authMode === 'signin' 
-                  ? 'Sign in with your Google Workspace account to begin extracting leads.'
-                  : 'Register and get 50 free daily credits by signing up with your Google account.'
-                }
+              )}
+              <div>
+                <label className="text-[10px] text-slate-400">Email Address</label>
+                <input 
+                  type="email" 
+                  placeholder="name@company.com"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                />
               </div>
-            )}
+              <div>
+                <label className="text-[10px] text-slate-400">Password</label>
+                <div className="relative">
+                  <input 
+                    type={showPassword ? "text" : "password"} 
+                    placeholder="••••••••"
+                    value={passwordInput}
+                    onChange={(e) => setPasswordInput(e.target.value)}
+                    className={`w-full p-2 mt-1 pr-8 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-2 top-3 text-slate-400 hover:text-slate-200"
+                  >
+                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
 
-            <button 
-              onClick={handleLogin}
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all hover-lift shadow-md"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-              <span>{authMode === 'signin' ? 'Sign In with Google' : 'Sign Up with Google'}</span>
-            </button>
+              <button 
+                type="submit"
+                disabled={isAuthLoading}
+                className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-bold py-2 rounded-lg text-xs mt-2 transition-all shadow-md flex items-center justify-center gap-2"
+              >
+                {isAuthLoading ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>Please wait...</span></>
+                ) : (
+                  <span>{authMode === 'signup' ? 'Create Free Account' : 'Sign In'}</span>
+                )}
+              </button>
+            </form>
           </div>
         ) : (
           /* LOGGED IN VIEWS */
@@ -954,18 +903,60 @@ export default function LeadPopupUI() {
                 </div>
 
                 {/* Upgrades */}
-                <div className={`p-3 rounded-lg border ${theme === 'dark' ? 'bg-slate-900/40 border-slate-800' : 'bg-white border-slate-200'}`}>
-                  <div className="text-[10px] font-bold text-slate-400 mb-2">Upgrade Subscription</div>
-                  <div className="flex justify-between items-center text-xs">
+                <div className={`p-3 rounded-lg border ${theme === 'dark' ? 'bg-slate-900/40 border-slate-800' : 'bg-white border-slate-200'} space-y-3`}>
+                  <div className="text-[10px] font-bold text-slate-400">Upgrade Subscription</div>
+                  
+                  <div className="flex justify-between items-center text-xs border-b border-slate-850 pb-2">
                     <div>
                       <div className="font-bold">Individual Tier</div>
                       <div className="text-[9px] text-slate-400">500 leads/day & Sheets Sync</div>
                     </div>
                     <button 
                       onClick={() => handleUpgrade('Individual')}
-                      className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1 rounded text-[10px] flex items-center gap-1 shadow-sm"
+                      disabled={currentPlan === 'Individual'}
+                      className={`font-bold px-3 py-1 rounded text-[10px] flex items-center gap-1 shadow-sm transition-all ${
+                        currentPlan === 'Individual' 
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/35 cursor-default'
+                          : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                      }`}
                     >
-                      $4/mo
+                      {currentPlan === 'Individual' ? 'Active' : '$4/mo'}
+                    </button>
+                  </div>
+
+                  <div className="flex justify-between items-center text-xs border-b border-slate-850 pb-2">
+                    <div>
+                      <div className="font-bold">Team Tier</div>
+                      <div className="text-[9px] text-slate-400">2,500 leads/day & Teammates</div>
+                    </div>
+                    <button 
+                      onClick={() => handleUpgrade('Team')}
+                      disabled={currentPlan === 'Team'}
+                      className={`font-bold px-3 py-1 rounded text-[10px] flex items-center gap-1 shadow-sm transition-all ${
+                        currentPlan === 'Team' 
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/35 cursor-default'
+                          : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                      }`}
+                    >
+                      {currentPlan === 'Team' ? 'Active' : '$15/mo'}
+                    </button>
+                  </div>
+
+                  <div className="flex justify-between items-center text-xs">
+                    <div>
+                      <div className="font-bold">Agency Tier</div>
+                      <div className="text-[9px] text-slate-400">10,000 leads/day & CRM Sync</div>
+                    </div>
+                    <button 
+                      onClick={() => handleUpgrade('Agency')}
+                      disabled={currentPlan === 'Agency'}
+                      className={`font-bold px-3 py-1 rounded text-[10px] flex items-center gap-1 shadow-sm transition-all ${
+                        currentPlan === 'Agency' 
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/35 cursor-default'
+                          : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                      }`}
+                    >
+                      {currentPlan === 'Agency' ? 'Active' : '$49/mo'}
                     </button>
                   </div>
                 </div>

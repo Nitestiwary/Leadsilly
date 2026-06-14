@@ -22,20 +22,31 @@ Leadsilly is a production-ready B2B contact extraction Chrome Extension and back
   * **Team**: 2500 credits/day
   * **Agency**: 10000 credits/day
 * **Server-Synced Tracking**: Remaining daily credits are calculated and tracked on the PostgreSQL server, preventing users from resetting credit limits by reinstalling the extension.
-* **Double-Gateway Subscriptions**: Integrated with Stripe (USD subscriptions) and Razorpay (INR payments) directly in the backend.
+* **Double-Gateway Subscriptions**: Integrated with Stripe (USD subscriptions) and Razorpay Standard Web Checkout (INR/International payments) with backend signature verification.
 
 ### 🔒 Chrome Web Store Compliant & Secure
 * **Least Privilege permissions**: Limits host permissions strictly to your local/production API endpoints (`http://localhost:5000/*` and `https://leadsilly.com/*`), matching Google's latest security guidelines.
 * **Dynamic ActiveTab scripting**: Injects parsing scripts on-demand only when you click the scraper, eliminating broad install warnings.
 * **Strict Manifest V3 Configuration**: Uses Vite for compilation and contains zero remote code execution or inline scripting (CSP compliant).
+* **Payment Redirection**: Redirects payment transactions to the secure web application (`leadsilly.com/checkout`) rather than using external scripts inside the extension context, adhering strictly to Chrome Web Store remote-code execution guidelines.
+
+---
+
+## 💳 Razorpay Sandbox Testing Instructions
+
+When verifying the billing flows in local development or staging, utilize the following credentials:
+* **Test Cards**: Use `4111 1111 1111 1111` with any Expiry (e.g., `12/26`) and CVV `123`.
+* **Test UPI ID**: `test@razorpay`
+* **Sandbox Flow**: Standard checkout modal resolves immediately without deducting real currency when testing with test API keys.
 
 ---
 
 ## 🛠 Tech Stack
 * **Frontend / Extension**: React, TypeScript, Tailwind CSS, Vite (Manifest V3)
+* **Marketing Website**: Next.js 15+, Tailwind CSS, Framer Motion
 * **Backend API**: Node.js, Express.js, TypeScript
 * **Database**: PostgreSQL (UUID index keys, relational models)
-* **Integrations**: Stripe API, Razorpay API, Google Sheets API, Google OAuth2
+* **Integrations**: Stripe API, Razorpay Web SDK, Google Sheets API, Google OAuth2
 
 ---
 
@@ -46,6 +57,7 @@ leadsilly/
 ├── extension/                 # Chrome Extension React UI & Scraping Engine
 ├── database/
 │   └── schema.sql             # DB Tables schema initialization
+├── leadsilly-website/         # Next.js SaaS Website, dynamic SEO landers & Razorpay checkout
 ├── docker-compose.yml         # Container runner
 └── README.md                  # Project details
 ```
@@ -96,6 +108,18 @@ psql -U postgres -d leadsilly -f database/schema.sql
 4. Enable **Developer Mode** in the top right.
 5. Click **Load unpacked** and select the compiled `dist/` folder inside `leadsilly/extension` (or use the packaged folder on your Desktop).
 
+#### Marketing Website Setup (Next.js)
+1. Move to the website directory and install:
+   ```bash
+   cd leadsilly-website
+   npm install
+   ```
+2. Build and export static assets (compiled into the `/out` directory):
+   ```bash
+   npm run build
+   ```
+3. The static site outputs are fully configured for easy Hostinger/Apache static deployment via directory-routing (`trailingSlash: true`).
+
 ---
 
 ## 🌐 API Route Configurations
@@ -106,7 +130,8 @@ psql -U postgres -d leadsilly -f database/schema.sql
 | `/api/leads` | `POST` | Authenticated | Create lead metadata (with auto limit constraints & duplicate filters) |
 | `/api/leads` | `GET` | Authenticated | Fetch workspace leads (supports search, tags, limit) |
 | `/api/team/invite` | `POST` | Authenticated | Generate invitation token link |
-| `/api/billing/checkout` | `POST` | Authenticated | Create Stripe/Razorpay subscription session |
+| `/api/billing/checkout` | `POST` | Authenticated | Create Stripe checkout session or Razorpay Order ID |
+| `/api/billing/razorpay/verify` | `POST` | Authenticated | Verify Razorpay HMAC-SHA256 signature and upgrade plan |
 | `/api/exports/xlsx` | `GET` | Authenticated | Export leads to formatted Excel spreadsheet |
 | `/api/exports/pdf` | `GET` | Authenticated | Draw PDF report tables |
 | `/api/exports/google-sheets` | `POST` | Authenticated | Sync/Append leads directly to Google Sheets |
