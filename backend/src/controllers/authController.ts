@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import pool from '../config/db';
 import { OAuth2Client } from 'google-auth-library';
 import { sendOTPEmail } from '../services/emailService';
+import { verifyFirebaseToken } from '../config/firebase';
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -331,3 +332,107 @@ export const emailSignIn = async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Internal server error during sign-in' });
   }
 };
+
+// ── Firebase Auth Endpoint ────────────────────────────────────────────────────
+export const firebaseAuth = async (req: Request, res: Response) => {
+  const { idToken } = req.body;
+  if (!idToken) {
+    return res.status(400).json({ error: 'Firebase ID Token is required' });
+  }
+
+  try {
+    // 1. Verify the Firebase ID token
+    const decodedToken = await verifyFirebaseToken(idToken);
+    const { email, name: displayName, picture } = decodedToken;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email not found in Firebase token' });
+    }
+
+    const name = displayName || email.split('@')[0];
+    const avatarUrl = picture || '';
+
+    // 2. Find or Create the User in our database
+    let userResult = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    let user = userResult.rows[0];
+
+    if (!user) {
+      // User doesn't exist, create them
+      const newUser = await pool.query(
+        'INSERT INTO users (email, name, avatar_url, email_verified) VALUES ($1, $2, $3, TRUE) RETURNING *',
+        [email, name, avatarUrl]
+      );
+      user = newUser.rows[0];
+
+      // Setup default Organization & Workspace
+      const orgName = `${user.name}'s Org`;
+      const orgResult = await pool.query(
+        'INSERT INTO organizations (name, owner_id) VALUES ($1, $2) RETURNING *',
+        [orgName, user.id]
+      );
+      const organization = orgResult.rows[0];
+
+      const workspaceResult = await pool.query(
+        'INSERT INTO workspaces (name, organization_id) VALUES ($1, $2) RETURNING *',
+        ['Default Workspace', organization.id]
+      );
+      const workspace = workspaceResult.rows[0];
+
+      // Make user owner of the workspace
+      await pool.query(
+        'INSERT INTO members (user_id, organization_id, workspace_id, role) VALUES ($1, $2, $3, $4)',
+        [user.id, organization.id, workspace.id, 'Owner']
+      );
+
+      // Default Free Subscription
+      await pool.query(
+        'INSERT INTO subscriptions (user_id, organization_id, plan_type, status) VALUES ($1, $2, $3, $4)',
+        [user.id, organization.id, 'Free', 'active']
+      );
+    } else if (!user.email_verified) {
+      // Update verified status since they verified via Firebase
+      await pool.query('UPDATE users SET email_verified = TRUE WHERE id = $1', [user.id]);
+    }
+
+    // 3. Fetch membership and subscription details
+    const membershipResult = await pool.query(
+      `SELECT m.role, m.workspace_id, s.plan_type 
+       FROM members m
+       LEFT JOIN subscriptions s ON m.organization_id = s.organization_id
+       WHERE m.user_id = $1 LIMIT 1`,
+      [user.id]
+    );
+
+    const workspaceId = membershipResult.rows[0]?.workspace_id || '';
+    const planType = membershipResult.rows[0]?.plan_type || 'Free';
+
+    // 4. Sign our backend JWT token
+    const token = jwt.sign(
+      {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        planType,
+        workspaceId
+      },
+      process.env.JWT_SECRET || 'leadsilly_secret_key_123',
+      { expiresIn: '30d' }
+    );
+
+    return res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatarUrl: user.avatar_url,
+        planType,
+        workspaceId
+      }
+    });
+  } catch (error: any) {
+    console.error('Firebase Auth Verification Error:', error);
+    return res.status(401).json({ error: error.message || 'Firebase authentication failed' });
+  }
+};
+

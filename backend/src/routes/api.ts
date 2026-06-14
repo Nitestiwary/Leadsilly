@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { googleSignIn, emailSignIn, emailSignUp, sendOTP, verifyOTPAndRegister } from '../controllers/authController';
+import { googleSignIn, emailSignIn, emailSignUp, sendOTP, verifyOTPAndRegister, firebaseAuth } from '../controllers/authController';
 import { createLead, getLeads, updateLead, deleteLead } from '../controllers/leadsController';
 import { inviteMember, acceptInvitation, getWorkspaces, createWorkspace } from '../controllers/teamController';
 import { createCheckoutSession, handleRazorpayVerification } from '../controllers/billingController';
@@ -16,6 +16,7 @@ router.post('/auth/login', emailSignIn);
 router.post('/auth/register', emailSignUp);           // Legacy (verifyOTPAndRegister alias)
 router.post('/auth/send-otp', sendOTP);               // Step 1: send OTP to email
 router.post('/auth/verify-otp', verifyOTPAndRegister); // Step 2: verify OTP, create account
+router.post('/auth/firebase', firebaseAuth);           // Firebase auth endpoint (takes idToken)
 
 
 // Leads Operations (Authenticated)

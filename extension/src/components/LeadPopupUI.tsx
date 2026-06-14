@@ -5,6 +5,14 @@ import {
   AlertCircle, ChevronRight, FileSpreadsheet, Loader2, Sparkles,
   Eye, EyeOff
 } from 'lucide-react';
+import { 
+  firebaseSignUp, 
+  firebaseSignIn, 
+  checkEmailVerified, 
+  resendVerificationEmail, 
+  firebaseSignOut 
+} from '../config/firebase';
+import { type User as FirebaseUser } from 'firebase/auth';
 
 interface LeadData {
   id?: string;
@@ -71,6 +79,7 @@ export default function LeadPopupUI() {
   const [passwordInput, setPasswordInput] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [otpInput, setOtpInput] = useState('');
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [otpResendTimer, setOtpResendTimer] = useState(0);
 
@@ -141,7 +150,7 @@ export default function LeadPopupUI() {
     } catch (e) {}
   };
 
-  // 2. Auth via Email/Password → real backend
+  // 2. Auth via Firebase Authentication
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
   const startResendTimer = () => {
@@ -164,65 +173,85 @@ export default function LeadPopupUI() {
     setIsAuthLoading(true);
     try {
       if (authMode === 'signin') {
-        // ── Sign In: direct email + password ──────────────────────────────────
-        const res = await fetch(`${BACKEND_URL}/api/auth/login`, {
+        // ── Sign In via Firebase ──────────────────────────────────────────────
+        const fbUser = await firebaseSignIn(emailInput, passwordInput);
+        
+        // Wait, check if they are email verified
+        if (!fbUser.emailVerified) {
+          setFirebaseUser(fbUser);
+          setAuthStep('otp'); // reusing otp step layout as "check email" view
+          showToast('Please verify your email to log in.', 'error');
+          setIsAuthLoading(false);
+          return;
+        }
+
+        // Get ID token and send to backend
+        const idToken = await fbUser.getIdToken();
+        const res = await fetch(`${BACKEND_URL}/api/auth/firebase`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: emailInput, password: passwordInput })
+          body: JSON.stringify({ idToken })
         });
         const data = await res.json();
-        if (!res.ok) { showToast(data.error || 'Sign in failed', 'error'); return; }
+        if (!res.ok) { showToast(data.error || 'Sign in validation failed', 'error'); return; }
+
         localStorage.setItem('jwt_token', data.token);
         localStorage.setItem('user_details', JSON.stringify(data.user));
         setToken(data.token);
         setUser(data.user);
         showToast(`Welcome back, ${data.user.name}!`);
       } else {
-        // ── Sign Up Step 1: validate then send OTP ────────────────────────────
+        // ── Sign Up via Firebase ──────────────────────────────────────────────
         if (!nameInput) { showToast('Please enter your name', 'error'); return; }
         if (passwordInput.length < 6) { showToast('Password must be at least 6 characters', 'error'); return; }
 
-        const res = await fetch(`${BACKEND_URL}/api/auth/send-otp`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: emailInput, name: nameInput, password: passwordInput })
-        });
-        const data = await res.json();
-        if (!res.ok) { showToast(data.error || 'Failed to send OTP', 'error'); return; }
-
-        setAuthStep('otp');
+        const fbUser = await firebaseSignUp(nameInput, emailInput, passwordInput);
+        setFirebaseUser(fbUser);
+        setAuthStep('otp'); // Show verification prompt
         startResendTimer();
-        showToast(`Verification code sent to ${emailInput}`, 'info');
+        showToast(`Verification link sent to ${emailInput}`, 'info');
       }
     } catch (err: any) {
-      showToast('Network error. Is the backend running?', 'error');
+      console.error(err);
+      showToast(err.message || 'Authentication failed. Please check details.', 'error');
     } finally {
       setIsAuthLoading(false);
     }
   };
 
-  const handleOTPVerify = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!otpInput || otpInput.length !== 6) {
-      showToast('Please enter the 6-digit code', 'error');
+  // Verify link confirmation checker (Called manually when user clicks "I have verified")
+  const handleVerifyLinkCheck = async () => {
+    if (!firebaseUser) {
+      showToast('No pending verification found', 'error');
       return;
     }
+
     setIsAuthLoading(true);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/auth/verify-otp`, {
+      const isVerified = await checkEmailVerified(firebaseUser);
+      if (!isVerified) {
+        showToast('Email not verified yet. Please check your inbox/spam folder.', 'error');
+        setIsAuthLoading(false);
+        return;
+      }
+
+      // Success, email is verified! Now request backend JWT
+      const idToken = await firebaseUser.getIdToken();
+      const res = await fetch(`${BACKEND_URL}/api/auth/firebase`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: emailInput, otp: otpInput })
+        body: JSON.stringify({ idToken })
       });
       const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'Verification failed', 'error'); return; }
+      if (!res.ok) { showToast(data.error || 'Account synchronization failed', 'error'); return; }
+
       localStorage.setItem('jwt_token', data.token);
       localStorage.setItem('user_details', JSON.stringify(data.user));
       setToken(data.token);
       setUser(data.user);
-      showToast(`Welcome, ${data.user.name}! Account created ✓`);
+      showToast(`Welcome, ${data.user.name}! Account created & verified successfully ✓`);
     } catch (err: any) {
-      showToast('Network error. Please try again.', 'error');
+      showToast(err.message || 'Failed to verify. Please try again.', 'error');
     } finally {
       setIsAuthLoading(false);
     }
@@ -230,20 +259,14 @@ export default function LeadPopupUI() {
 
   const handleResendOTP = async () => {
     if (otpResendTimer > 0) return;
+    if (!firebaseUser) return;
     setIsAuthLoading(true);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/auth/send-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: emailInput, name: nameInput, password: passwordInput })
-      });
-      const data = await res.json();
-      if (!res.ok) { showToast(data.error || 'Failed to resend', 'error'); return; }
+      await resendVerificationEmail(firebaseUser);
       startResendTimer();
-      setOtpInput('');
-      showToast('New code sent to your email', 'info');
-    } catch {
-      showToast('Network error. Please try again.', 'error');
+      showToast('New verification email sent!', 'info');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to resend. Please try again.', 'error');
     } finally {
       setIsAuthLoading(false);
     }
@@ -668,40 +691,29 @@ export default function LeadPopupUI() {
                   <div className="w-14 h-14 rounded-2xl bg-amber-400/20 border border-amber-400/30 flex items-center justify-center text-3xl mx-auto mb-3">
                     📧
                   </div>
-                  <h2 className="text-sm font-bold">Check your email</h2>
-                  <p className="text-[10px] text-slate-400 mt-1">
-                    We sent a 6-digit code to<br/>
+                  <h2 className="text-sm font-bold">Verify your email</h2>
+                  <p className="text-[10px] text-slate-400 mt-1 px-2">
+                    We sent a verification link to:<br/>
                     <span className="text-amber-400 font-semibold">{emailInput}</span>
+                  </p>
+                  <p className="text-[9px] text-slate-500 mt-2 px-4 leading-normal">
+                    Please open the email and click the confirmation link, then return here and click the verification button below.
                   </p>
                 </div>
 
-                <form onSubmit={handleOTPVerify} className="space-y-3">
-                  <div>
-                    <label className="text-[10px] text-slate-400">Verification Code</label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={6}
-                      placeholder="• • • • • •"
-                      value={otpInput}
-                      onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      className={`w-full p-3 mt-1 rounded-lg text-center text-xl font-mono font-bold tracking-[0.5em] border ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-amber-400' : 'bg-white border-slate-200 text-amber-600'}`}
-                      autoFocus
-                    />
-                  </div>
-
+                <div className="space-y-3">
                   <button
-                    type="submit"
-                    disabled={isAuthLoading || otpInput.length !== 6}
+                    onClick={handleVerifyLinkCheck}
+                    disabled={isAuthLoading}
                     className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold py-2.5 rounded-lg text-xs transition-all shadow-md flex items-center justify-center gap-2"
                   >
                     {isAuthLoading ? (
-                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>Verifying...</span></>
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>Checking status...</span></>
                     ) : (
-                      <><CheckCircle2 className="w-3.5 h-3.5" /><span>Verify & Create Account</span></>
+                      <><CheckCircle2 className="w-3.5 h-3.5" /><span>I've Verified My Email</span></>
                     )}
                   </button>
-                </form>
+                </div>
 
                 <div className="text-center space-y-2">
                   <button
@@ -709,14 +721,14 @@ export default function LeadPopupUI() {
                     disabled={otpResendTimer > 0 || isAuthLoading}
                     className="text-[10px] text-blue-400 hover:text-blue-300 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
                   >
-                    {otpResendTimer > 0 ? `Resend code in ${otpResendTimer}s` : 'Resend code'}
+                    {otpResendTimer > 0 ? `Resend email in ${otpResendTimer}s` : 'Resend verification email'}
                   </button>
                   <br/>
                   <button
-                    onClick={() => { setAuthStep('form'); setOtpInput(''); }}
+                    onClick={() => { setAuthStep('form'); setFirebaseUser(null); }}
                     className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
                   >
-                    ← Back to sign up
+                    ← Back to signup / login
                   </button>
                 </div>
               </div>
@@ -798,13 +810,13 @@ export default function LeadPopupUI() {
                     {isAuthLoading ? (
                       <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>Please wait...</span></>
                     ) : (
-                      <span>{authMode === 'signup' ? 'Send Verification Code →' : 'Sign In'}</span>
+                      <span>{authMode === 'signup' ? 'Send Verification Link →' : 'Sign In'}</span>
                     )}
                   </button>
 
                   {authMode === 'signup' && (
                     <p className="text-[9px] text-slate-500 text-center">
-                      We'll send a 6-digit code to verify your email 📧
+                      We'll send a secure link to verify your email address 📧
                     </p>
                   )}
                 </form>

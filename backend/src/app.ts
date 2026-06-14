@@ -1,10 +1,14 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { initFirebaseAdmin } from './config/firebase';
 import apiRouter from './routes/api';
 import { handleStripeWebhook } from './controllers/billingController';
 
 dotenv.config();
+
+// Initialize Firebase Admin
+initFirebaseAdmin();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
