@@ -10,9 +10,25 @@ CREATE TABLE users (
     name VARCHAR(255) NOT NULL,
     avatar_url TEXT,
     password_hash TEXT,                                     -- NULL for Google OAuth users
+    email_verified BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Email OTP Verification Table (pending signups awaiting OTP confirmation)
+CREATE TABLE email_verifications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email VARCHAR(255) NOT NULL,
+    otp VARCHAR(6) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    password_hash TEXT NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    verified BOOLEAN DEFAULT FALSE,
+    attempts INT DEFAULT 0,                                 -- Track failed OTP attempts
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_email_verifications_email ON email_verifications(email);
+
 
 -- Organizations Table
 CREATE TABLE organizations (

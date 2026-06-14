@@ -25,6 +25,7 @@ interface LeadData {
 }
 
 const BACKEND_URL = 'https://leadsilly.com';
+// For local testing, change the above to: 'http://localhost:5000'
 
 const IS_DEV_MODE = false;
 
@@ -65,10 +66,13 @@ export default function LeadPopupUI() {
   
   // Custom Email Sign-In / Sign-Up configurations
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authStep, setAuthStep] = useState<'form' | 'otp'>('form'); // OTP verification step
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [nameInput, setNameInput] = useState('');
+  const [otpInput, setOtpInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [otpResendTimer, setOtpResendTimer] = useState(0);
 
   // Feedback Messages
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -140,42 +144,105 @@ export default function LeadPopupUI() {
   // 2. Auth via Email/Password → real backend
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
+  const startResendTimer = () => {
+    setOtpResendTimer(60);
+    const interval = setInterval(() => {
+      setOtpResendTimer(t => {
+        if (t <= 1) { clearInterval(interval); return 0; }
+        return t - 1;
+      });
+    }, 1000);
+  };
+
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailInput || !passwordInput) {
       showToast('Please fill out all required fields', 'error');
       return;
     }
-    if (authMode === 'signup' && !nameInput) {
-      showToast('Please enter your name', 'error');
-      return;
-    }
 
     setIsAuthLoading(true);
     try {
-      const endpoint = authMode === 'signup' ? '/api/auth/register' : '/api/auth/login';
-      const body = authMode === 'signup'
-        ? { email: emailInput, password: passwordInput, name: nameInput }
-        : { email: emailInput, password: passwordInput };
+      if (authMode === 'signin') {
+        // ── Sign In: direct email + password ──────────────────────────────────
+        const res = await fetch(`${BACKEND_URL}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: emailInput, password: passwordInput })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Sign in failed', 'error'); return; }
+        localStorage.setItem('jwt_token', data.token);
+        localStorage.setItem('user_details', JSON.stringify(data.user));
+        setToken(data.token);
+        setUser(data.user);
+        showToast(`Welcome back, ${data.user.name}!`);
+      } else {
+        // ── Sign Up Step 1: validate then send OTP ────────────────────────────
+        if (!nameInput) { showToast('Please enter your name', 'error'); return; }
+        if (passwordInput.length < 6) { showToast('Password must be at least 6 characters', 'error'); return; }
 
-      const res = await fetch(`${BACKEND_URL}${endpoint}`, {
+        const res = await fetch(`${BACKEND_URL}/api/auth/send-otp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: emailInput, name: nameInput, password: passwordInput })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Failed to send OTP', 'error'); return; }
+
+        setAuthStep('otp');
+        startResendTimer();
+        showToast(`Verification code sent to ${emailInput}`, 'info');
+      }
+    } catch (err: any) {
+      showToast('Network error. Is the backend running?', 'error');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleOTPVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otpInput || otpInput.length !== 6) {
+      showToast('Please enter the 6-digit code', 'error');
+      return;
+    }
+    setIsAuthLoading(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/auth/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify({ email: emailInput, otp: otpInput })
       });
       const data = await res.json();
-
-      if (!res.ok) {
-        showToast(data.error || 'Authentication failed', 'error');
-        return;
-      }
-
+      if (!res.ok) { showToast(data.error || 'Verification failed', 'error'); return; }
       localStorage.setItem('jwt_token', data.token);
       localStorage.setItem('user_details', JSON.stringify(data.user));
       setToken(data.token);
       setUser(data.user);
-      showToast(authMode === 'signup' ? `Welcome, ${data.user.name}! Account created.` : `Welcome back, ${data.user.name}!`);
+      showToast(`Welcome, ${data.user.name}! Account created ✓`);
     } catch (err: any) {
+      showToast('Network error. Please try again.', 'error');
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleResendOTP = async () => {
+    if (otpResendTimer > 0) return;
+    setIsAuthLoading(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: emailInput, name: nameInput, password: passwordInput })
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || 'Failed to resend', 'error'); return; }
+      startResendTimer();
+      setOtpInput('');
+      showToast('New code sent to your email', 'info');
+    } catch {
       showToast('Network error. Please try again.', 'error');
     } finally {
       setIsAuthLoading(false);
@@ -557,7 +624,9 @@ export default function LeadPopupUI() {
           <img src="icon128.png" className="w-8 h-8 rounded-lg object-contain shadow-md" alt="Leadsilly" />
           <div>
             <h1 className="text-sm font-black tracking-tight flex items-center gap-1.5">
-              leads<span className="text-amber-500">silly</span>
+              {/* No whitespace between — renders as one word "Leadsilly" */}
+              <span>Lead<span className="text-amber-500">silly</span></span>
+
               {user && currentPlan !== 'Free' && (
                 <span className="text-[8px] bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 font-black px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow-sm shadow-amber-500/25 animate-pulse uppercase tracking-wider">
                   <Sparkles className="w-2.5 h-2.5" />
@@ -592,86 +661,155 @@ export default function LeadPopupUI() {
         {!token ? (
           /* AUTHENTICATION PROMPT */
           <div className="h-full flex flex-col justify-center p-2">
-            <div className="text-center mb-4">
-              <div className="w-12 h-12 rounded-xl bg-amber-400/20 border border-amber-400/30 flex items-center justify-center text-2xl mx-auto mb-2 animate-pulse">
-                🔍
-              </div>
-              <h2 className="text-sm font-bold">Find B2B Contacts Instantly</h2>
-            </div>
-
-            {/* Display Sign In / Sign Up Tabs */}
-            <div className="flex border-b border-slate-800 mb-4 text-xs font-semibold">
-              <button 
-                type="button"
-                onClick={() => setAuthMode('signin')}
-                className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signin' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
-              >
-                Sign In
-              </button>
-              <button 
-                type="button"
-                onClick={() => setAuthMode('signup')}
-                className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signup' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
-              >
-                Sign Up
-              </button>
-            </div>
-
-            <form onSubmit={handleEmailAuth} className="space-y-3">
-              {authMode === 'signup' && (
-                <div>
-                  <label className="text-[10px] text-slate-400">Full Name</label>
-                  <input 
-                    type="text" 
-                    placeholder="Enter your full name"
-                    value={nameInput}
-                    onChange={(e) => setNameInput(e.target.value)}
-                    className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                  />
+            {/* OTP Verification Step */}
+            {authStep === 'otp' ? (
+              <div className="space-y-4">
+                <div className="text-center">
+                  <div className="w-14 h-14 rounded-2xl bg-amber-400/20 border border-amber-400/30 flex items-center justify-center text-3xl mx-auto mb-3">
+                    📧
+                  </div>
+                  <h2 className="text-sm font-bold">Check your email</h2>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    We sent a 6-digit code to<br/>
+                    <span className="text-amber-400 font-semibold">{emailInput}</span>
+                  </p>
                 </div>
-              )}
-              <div>
-                <label className="text-[10px] text-slate-400">Email Address</label>
-                <input 
-                  type="email" 
-                  placeholder="name@company.com"
-                  value={emailInput}
-                  onChange={(e) => setEmailInput(e.target.value)}
-                  className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-slate-400">Password</label>
-                <div className="relative">
-                  <input 
-                    type={showPassword ? "text" : "password"} 
-                    placeholder="••••••••"
-                    value={passwordInput}
-                    onChange={(e) => setPasswordInput(e.target.value)}
-                    className={`w-full p-2 mt-1 pr-8 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
-                  />
-                  <button 
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-2 top-3 text-slate-400 hover:text-slate-200"
+
+                <form onSubmit={handleOTPVerify} className="space-y-3">
+                  <div>
+                    <label className="text-[10px] text-slate-400">Verification Code</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      placeholder="• • • • • •"
+                      value={otpInput}
+                      onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      className={`w-full p-3 mt-1 rounded-lg text-center text-xl font-mono font-bold tracking-[0.5em] border ${theme === 'dark' ? 'bg-slate-900 border-slate-700 text-amber-400' : 'bg-white border-slate-200 text-amber-600'}`}
+                      autoFocus
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isAuthLoading || otpInput.length !== 6}
+                    className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold py-2.5 rounded-lg text-xs transition-all shadow-md flex items-center justify-center gap-2"
                   >
-                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    {isAuthLoading ? (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>Verifying...</span></>
+                    ) : (
+                      <><CheckCircle2 className="w-3.5 h-3.5" /><span>Verify & Create Account</span></>
+                    )}
+                  </button>
+                </form>
+
+                <div className="text-center space-y-2">
+                  <button
+                    onClick={handleResendOTP}
+                    disabled={otpResendTimer > 0 || isAuthLoading}
+                    className="text-[10px] text-blue-400 hover:text-blue-300 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {otpResendTimer > 0 ? `Resend code in ${otpResendTimer}s` : 'Resend code'}
+                  </button>
+                  <br/>
+                  <button
+                    onClick={() => { setAuthStep('form'); setOtpInput(''); }}
+                    className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
+                  >
+                    ← Back to sign up
                   </button>
                 </div>
               </div>
+            ) : (
+              <>
+                {/* Display Sign In / Sign Up Tabs */}
+                <div className="text-center mb-4">
+                  <div className="w-12 h-12 rounded-xl bg-amber-400/20 border border-amber-400/30 flex items-center justify-center text-2xl mx-auto mb-2 animate-pulse">
+                    🔍
+                  </div>
+                  <h2 className="text-sm font-bold">Find B2B Contacts Instantly</h2>
+                </div>
 
-              <button 
-                type="submit"
-                disabled={isAuthLoading}
-                className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-bold py-2 rounded-lg text-xs mt-2 transition-all shadow-md flex items-center justify-center gap-2"
-              >
-                {isAuthLoading ? (
-                  <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>Please wait...</span></>
-                ) : (
-                  <span>{authMode === 'signup' ? 'Create Free Account' : 'Sign In'}</span>
-                )}
-              </button>
-            </form>
+                <div className="flex border-b border-slate-800 mb-4 text-xs font-semibold">
+                  <button 
+                    type="button"
+                    onClick={() => { setAuthMode('signin'); setAuthStep('form'); }}
+                    className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signin' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    Sign In
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => { setAuthMode('signup'); setAuthStep('form'); }}
+                    className={`flex-1 pb-2 text-center transition-colors ${authMode === 'signup' ? 'text-amber-500 border-b-2 border-amber-500' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    Sign Up
+                  </button>
+                </div>
+
+                <form onSubmit={handleEmailAuth} className="space-y-3">
+                  {authMode === 'signup' && (
+                    <div>
+                      <label className="text-[10px] text-slate-400">Full Name</label>
+                      <input 
+                        type="text" 
+                        placeholder="Enter your full name"
+                        value={nameInput}
+                        onChange={(e) => setNameInput(e.target.value)}
+                        className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                      />
+                    </div>
+                  )}
+                  <div>
+                    <label className="text-[10px] text-slate-400">Email Address</label>
+                    <input 
+                      type="email" 
+                      placeholder="name@company.com"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                      className={`w-full p-2 mt-1 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400">Password</label>
+                    <div className="relative">
+                      <input 
+                        type={showPassword ? "text" : "password"} 
+                        placeholder="••••••••"
+                        value={passwordInput}
+                        onChange={(e) => setPasswordInput(e.target.value)}
+                        className={`w-full p-2 mt-1 pr-8 rounded text-xs border ${theme === 'dark' ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-slate-200 text-slate-900'}`}
+                      />
+                      <button 
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-2 top-3 text-slate-400 hover:text-slate-200"
+                      >
+                        {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button 
+                    type="submit"
+                    disabled={isAuthLoading}
+                    className="w-full bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 font-bold py-2 rounded-lg text-xs mt-2 transition-all shadow-md flex items-center justify-center gap-2"
+                  >
+                    {isAuthLoading ? (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>Please wait...</span></>
+                    ) : (
+                      <span>{authMode === 'signup' ? 'Send Verification Code →' : 'Sign In'}</span>
+                    )}
+                  </button>
+
+                  {authMode === 'signup' && (
+                    <p className="text-[9px] text-slate-500 text-center">
+                      We'll send a 6-digit code to verify your email 📧
+                    </p>
+                  )}
+                </form>
+              </>
+            )}
           </div>
         ) : (
           /* LOGGED IN VIEWS */

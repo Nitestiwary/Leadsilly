@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import pool from '../config/db';
 import { OAuth2Client } from 'google-auth-library';
+import { sendOTPEmail } from '../services/emailService';
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -144,31 +145,104 @@ export const googleSignIn = async (req: Request, res: Response) => {
   }
 };
 
-// ── Email / Password Sign-Up ─────────────────────────────────────────────────
-export const emailSignUp = async (req: Request, res: Response) => {
-  const { email, password, name } = req.body;
-  if (!email || !password || !name) {
-    return res.status(400).json({ error: 'Email, password and name are required' });
+// ── Step 1: Send OTP for Email Verification ──────────────────────────────────
+export const sendOTP = async (req: Request, res: Response) => {
+  const { email, name, password } = req.body;
+  if (!email || !name || !password) {
+    return res.status(400).json({ error: 'Name, email and password are required' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
 
   try {
-    // Check if user already exists
+    // Check if email already registered
     const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: 'An account with this email already exists. Please sign in.' });
     }
 
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const passwordHash = await bcrypt.hash(password, 10);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    // Delete any previous pending OTP for this email
+    await pool.query('DELETE FROM email_verifications WHERE email = $1', [email]);
+
+    // Save OTP + pending user data
+    await pool.query(
+      `INSERT INTO email_verifications (email, otp, name, password_hash, expires_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [email, otp, name, passwordHash, expiresAt]
+    );
+
+    // Send OTP email
+    await sendOTPEmail(email, name, otp);
+
+    return res.json({ message: `Verification code sent to ${email}` });
+  } catch (error) {
+    console.error('Send OTP error:', error);
+    return res.status(500).json({ error: 'Failed to send verification email. Please try again.' });
+  }
+};
+
+// ── Step 2: Verify OTP and Create Account ────────────────────────────────────
+export const verifyOTPAndRegister = async (req: Request, res: Response) => {
+  const { email, otp } = req.body;
+  if (!email || !otp) {
+    return res.status(400).json({ error: 'Email and OTP are required' });
+  }
+
+  try {
+    // Fetch the most recent unverified OTP for this email
+    const result = await pool.query(
+      `SELECT * FROM email_verifications
+       WHERE email = $1 AND verified = FALSE
+       ORDER BY created_at DESC LIMIT 1`,
+      [email]
+    );
+    const verification = result.rows[0];
+
+    if (!verification) {
+      return res.status(400).json({ error: 'No pending verification found. Please request a new code.' });
+    }
+
+    // Check expiry
+    if (new Date() > new Date(verification.expires_at)) {
+      await pool.query('DELETE FROM email_verifications WHERE id = $1', [verification.id]);
+      return res.status(400).json({ error: 'Verification code has expired. Please request a new one.' });
+    }
+
+    // Limit brute-force: max 5 attempts
+    if (verification.attempts >= 5) {
+      await pool.query('DELETE FROM email_verifications WHERE id = $1', [verification.id]);
+      return res.status(429).json({ error: 'Too many failed attempts. Please request a new code.' });
+    }
+
+    // Check OTP
+    if (verification.otp !== otp.trim()) {
+      await pool.query(
+        'UPDATE email_verifications SET attempts = attempts + 1 WHERE id = $1',
+        [verification.id]
+      );
+      const remaining = 5 - (verification.attempts + 1);
+      return res.status(400).json({ error: `Invalid code. ${remaining} attempt(s) remaining.` });
+    }
+
+    // ✅ OTP verified — create the user
+    await pool.query('UPDATE email_verifications SET verified = TRUE WHERE id = $1', [verification.id]);
+
     const newUser = await pool.query(
-      'INSERT INTO users (email, name, password_hash) VALUES ($1, $2, $3) RETURNING *',
-      [email, name, passwordHash]
+      'INSERT INTO users (email, name, password_hash, email_verified) VALUES ($1, $2, $3, TRUE) RETURNING *',
+      [email, verification.name, verification.password_hash]
     );
     const user = newUser.rows[0];
 
-    // Setup Default Org, Workspace, Membership & Free Subscription
+    // Setup Org, Workspace, Membership & Free Subscription
     const orgResult = await pool.query(
       'INSERT INTO organizations (name, owner_id) VALUES ($1, $2) RETURNING *',
-      [`${name}'s Org`, user.id]
+      [`${user.name}'s Org`, user.id]
     );
     const organization = orgResult.rows[0];
 
@@ -187,6 +261,9 @@ export const emailSignUp = async (req: Request, res: Response) => {
       [user.id, organization.id, 'Free', 'active']
     );
 
+    // Clean up old verification records for this email
+    await pool.query('DELETE FROM email_verifications WHERE email = $1', [email]);
+
     const token = jwt.sign(
       { id: user.id, email: user.email, name: user.name, planType: 'Free', workspaceId: workspace.id },
       process.env.JWT_SECRET || 'leadsilly_secret_key_123',
@@ -198,10 +275,14 @@ export const emailSignUp = async (req: Request, res: Response) => {
       user: { id: user.id, email: user.email, name: user.name, avatarUrl: '', planType: 'Free', workspaceId: workspace.id }
     });
   } catch (error) {
-    console.error('Sign up error:', error);
-    return res.status(500).json({ error: 'Internal server error during registration' });
+    console.error('Verify OTP error:', error);
+    return res.status(500).json({ error: 'Internal server error during account creation' });
   }
 };
+
+// Legacy export kept for backward compat (not used by extension anymore)
+export const emailSignUp = verifyOTPAndRegister;
+
 
 // ── Email / Password Sign-In ─────────────────────────────────────────────────
 export const emailSignIn = async (req: Request, res: Response) => {
