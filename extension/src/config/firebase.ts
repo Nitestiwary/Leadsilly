@@ -49,10 +49,7 @@ export const firebaseSignUp = async (
   await updateProfile(user, { displayName: name });
 
   // Send verification email immediately
-  await sendEmailVerification(user, {
-    url: 'https://leadsilly.com',   // redirect after clicking link
-    handleCodeInApp: false,
-  });
+  await sendEmailVerification(user);
 
   return user;
 };
@@ -74,10 +71,7 @@ export const checkEmailVerified = async (user: User): Promise<boolean> => {
 
 // ── Helper: Resend Verification Email ─────────────────────────────────────────
 export const resendVerificationEmail = async (user: User): Promise<void> => {
-  await sendEmailVerification(user, {
-    url: 'https://leadsilly.com',
-    handleCodeInApp: false,
-  });
+  await sendEmailVerification(user);
 };
 
 // ── Helper: Sign Out ──────────────────────────────────────────────────────────
